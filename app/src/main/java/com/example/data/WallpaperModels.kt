@@ -8,6 +8,12 @@ enum class WallpaperSource {
     UPLOADED_GIF
 }
 
+enum class WallpaperTarget {
+    HOME_ONLY,
+    LOCK_ONLY,
+    BOTH
+}
+
 enum class RenderEngineMode {
     AUTO_HARDWARE,
     COMPATIBILITY_CANVAS
@@ -29,6 +35,7 @@ data class WallpaperItem(
 
 data class WallpaperSettings(
     val activeWallpaperId: String = BUILTIN_AURORA_ID,
+    val wallpaperTarget: WallpaperTarget = WallpaperTarget.BOTH,
     val soundEnabled: Boolean = true,
     val volume: Float = 0.75f,
     val muteDuringOtherMedia: Boolean = true,

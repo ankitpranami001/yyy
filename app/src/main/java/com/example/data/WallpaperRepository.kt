@@ -96,11 +96,15 @@ class WallpaperRepository(private val appContext: Context) {
         val modeName = prefs.getString(KEY_RENDER_MODE, RenderEngineMode.AUTO_HARDWARE.name)
         val renderMode = runCatching { RenderEngineMode.valueOf(modeName ?: "") }
             .getOrDefault(RenderEngineMode.AUTO_HARDWARE)
+        val targetName = prefs.getString(KEY_WALLPAPER_TARGET, WallpaperTarget.BOTH.name)
+        val wallpaperTarget = runCatching { WallpaperTarget.valueOf(targetName ?: "") }
+            .getOrDefault(WallpaperTarget.BOTH)
         return WallpaperSettings(
             activeWallpaperId = prefs.getString(
                 KEY_ACTIVE_ID,
                 WallpaperSettings.BUILTIN_AURORA_ID
             ) ?: WallpaperSettings.BUILTIN_AURORA_ID,
+            wallpaperTarget = wallpaperTarget,
             soundEnabled = prefs.getBoolean(KEY_SOUND_ENABLED, true),
             volume = prefs.getFloat(KEY_VOLUME, 0.75f).coerceIn(0f, 1f),
             muteDuringOtherMedia = prefs.getBoolean(KEY_MUTE_OTHER_MEDIA, true),
@@ -115,6 +119,7 @@ class WallpaperRepository(private val appContext: Context) {
         val updated = transform(readSettings())
         prefs.edit()
             .putString(KEY_ACTIVE_ID, updated.activeWallpaperId)
+            .putString(KEY_WALLPAPER_TARGET, updated.wallpaperTarget.name)
             .putBoolean(KEY_SOUND_ENABLED, updated.soundEnabled)
             .putFloat(KEY_VOLUME, updated.volume.coerceIn(0f, 1f))
             .putBoolean(KEY_MUTE_OTHER_MEDIA, updated.muteDuringOtherMedia)
@@ -461,6 +466,7 @@ class WallpaperRepository(private val appContext: Context) {
 
         private const val KEY_USER_WALLPAPERS = "user_wallpapers_json"
         private const val KEY_ACTIVE_ID = "active_wallpaper_id"
+        private const val KEY_WALLPAPER_TARGET = "wallpaper_target"
         private const val KEY_SOUND_ENABLED = "sound_enabled"
         private const val KEY_VOLUME = "sound_volume"
         private const val KEY_MUTE_OTHER_MEDIA = "mute_during_other_media"

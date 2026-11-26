@@ -1,8 +1,13 @@
 package com.example.wallpaper
 
 import android.annotation.SuppressLint
+import android.app.KeyguardManager
 import android.app.Presentation
+import android.app.WallpaperManager
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.graphics.Color
 import android.hardware.display.DisplayManager
@@ -25,9 +30,11 @@ import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.core.content.ContextCompat
 import com.example.data.RenderEngineMode
 import com.example.data.WallpaperRepository
 import com.example.data.WallpaperSource
+import com.example.data.WallpaperTarget
 
 class HtmlLiveWallpaperService : WallpaperService() {
 
@@ -38,12 +45,14 @@ class HtmlLiveWallpaperService : WallpaperService() {
         private val mainHandler = Handler(Looper.getMainLooper())
         private lateinit var repository: WallpaperRepository
         private lateinit var audioManager: AudioManager
+        private lateinit var keyguardManager: KeyguardManager
 
         private var virtualDisplay: VirtualDisplay? = null
         private var presentation: WallpaperPresentation? = null
         private var webView: WebView? = null
         private var mediaPlayer: MediaPlayer? = null
         private var isVideoPrepared: Boolean = false
+        private var videoSurfaceAttached: Boolean = false
 
         private var surfaceWidth: Int = 0
         private var surfaceHeight: Int = 0
@@ -56,8 +65,17 @@ class HtmlLiveWallpaperService : WallpaperService() {
         private var otherAppPlayingAudio: Boolean = false
         private var lastFrameNanos: Long = 0L
         private var frameScheduled: Boolean = false
+        private var lockReceiverRegistered: Boolean = false
 
         private var playbackCallback: Any? = null
+
+        private val lockStateReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                mainHandler.post {
+                    syncActivePlaybackAndVisibility()
+                }
+            }
+        }
 
         private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { prefs, _ ->
             mainHandler.post {
@@ -79,14 +97,16 @@ class HtmlLiveWallpaperService : WallpaperService() {
                         loadActiveWebWallpaper()
                     }
                 }
-                applyAudioAndVisibilityState()
+                syncActivePlaybackAndVisibility()
             }
         }
 
         private val frameCallback = object : Choreographer.FrameCallback {
             override fun doFrame(frameTimeNanos: Long) {
                 frameScheduled = false
-                if (usingVideoEngine || !usingCanvasFallback || !isEngineVisible) return
+                if (usingVideoEngine || !usingCanvasFallback || !isEngineVisible || !shouldRenderLiveContentNow()) {
+                    return
+                }
                 val settings = repository.readSettings()
                 val minIntervalNanos = 1_000_000_000L / settings.targetFps.coerceIn(15, 60)
                 if (frameTimeNanos - lastFrameNanos >= minIntervalNanos) {
@@ -101,9 +121,11 @@ class HtmlLiveWallpaperService : WallpaperService() {
             super.onCreate(surfaceHolder)
             repository = WallpaperRepository(applicationContext)
             audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
             setTouchEventsEnabled(true)
             repository.getPrefs().registerOnSharedPreferenceChangeListener(prefsListener)
             registerAudioPlaybackWatcher()
+            registerLockStateReceiver()
         }
 
         override fun onSurfaceChanged(
@@ -130,43 +152,14 @@ class HtmlLiveWallpaperService : WallpaperService() {
             mainHandler.post {
                 if (visible) {
                     checkOtherMediaBeforeUnmuting()
-                    if (usingVideoEngine) {
-                        applyAudioAndVisibilityState()
-                        if (isVideoPrepared) {
-                            runCatching {
-                                if (mediaPlayer?.isPlaying == false) mediaPlayer?.start()
-                            }
-                        }
-                    } else {
-                        runCatching {
-                            webView?.onResume()
-                            webView?.resumeTimers()
-                        }
-                        applyAudioAndVisibilityState()
-                        if (usingCanvasFallback) {
-                            scheduleNextCanvasFrame()
-                        }
-                    }
-                } else {
-                    stopCanvasLoop()
-                    applyAudioAndVisibilityState()
-                    if (usingVideoEngine) {
-                        runCatching {
-                            if (mediaPlayer?.isPlaying == true) mediaPlayer?.pause()
-                        }
-                    } else {
-                        runCatching {
-                            webView?.onPause()
-                            webView?.pauseTimers()
-                        }
-                    }
                 }
+                syncActivePlaybackAndVisibility()
             }
         }
 
         override fun onTouchEvent(event: MotionEvent?) {
             super.onTouchEvent(event)
-            if (event == null || usingVideoEngine) return
+            if (event == null || usingVideoEngine || !shouldRenderLiveContentNow()) return
             val settings = repository.readSettings()
             if (!settings.touchEnabled) return
             val copy = MotionEvent.obtain(event)
@@ -192,6 +185,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
 
         override fun onDestroy() {
             super.onDestroy()
+            unregisterLockStateReceiver()
             unregisterAudioPlaybackWatcher()
             repository.getPrefs().unregisterOnSharedPreferenceChangeListener(prefsListener)
             repository.release()
@@ -199,6 +193,111 @@ class HtmlLiveWallpaperService : WallpaperService() {
             mainHandler.post {
                 stopCanvasLoop()
                 tearDownRenderer()
+            }
+        }
+
+        /**
+         * Enforces Home-Only, Lock-Only, and Both placement across Android 7–16:
+         * - System picker preview always displays live content.
+         * - Android 14+ dedicated engine flags (FLAG_SYSTEM vs FLAG_LOCK) are respected directly.
+         * - Shared engines (or Android 7–13) switch live state immediately using KeyguardManager.
+         */
+        private fun shouldRenderLiveContentNow(): Boolean {
+            if (isPreview) return true
+            val target = repository.readSettings().wallpaperTarget
+            if (target == WallpaperTarget.BOTH) return true
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                val flags = wallpaperFlags
+                if (flags == WallpaperManager.FLAG_SYSTEM) {
+                    return target == WallpaperTarget.HOME_ONLY
+                }
+                if (flags == WallpaperManager.FLAG_LOCK) {
+                    return target == WallpaperTarget.LOCK_ONLY
+                }
+            }
+
+            val isLocked = runCatching { keyguardManager.isKeyguardLocked }.getOrDefault(false)
+            return when (target) {
+                WallpaperTarget.HOME_ONLY -> !isLocked
+                WallpaperTarget.LOCK_ONLY -> isLocked
+                WallpaperTarget.BOTH -> true
+            }
+        }
+
+        private fun syncActivePlaybackAndVisibility() {
+            val activeNow = isEngineVisible && shouldRenderLiveContentNow()
+
+            if (usingVideoEngine) {
+                val mp = mediaPlayer
+                if (activeNow) {
+                    if (mp != null && isVideoPrepared) {
+                        val holder = surfaceHolder
+                        if (!videoSurfaceAttached && holder != null && holder.surface.isValid) {
+                            runCatching {
+                                mp.setSurface(holder.surface)
+                                videoSurfaceAttached = true
+                            }
+                        }
+                        applyVideoVolume(mp)
+                        runCatching {
+                            if (!mp.isPlaying) mp.start()
+                        }
+                    }
+                } else {
+                    if (mp != null) {
+                        runCatching {
+                            mp.setVolume(0f, 0f)
+                            if (isVideoPrepared && mp.isPlaying) mp.pause()
+                            if (isEngineVisible && videoSurfaceAttached) {
+                                // Detach surface briefly so we can clear the inactive screen cleanly
+                                mp.setSurface(null)
+                                videoSurfaceAttached = false
+                                clearSurfaceToBlack()
+                            }
+                        }
+                    }
+                }
+                return
+            }
+
+            // HTML / GIF WebView engine
+            if (activeNow) {
+                runCatching {
+                    webView?.visibility = View.VISIBLE
+                    webView?.onResume()
+                    webView?.resumeTimers()
+                }
+                applyAudioAndVisibilityState()
+                if (usingCanvasFallback) {
+                    scheduleNextCanvasFrame()
+                }
+            } else {
+                stopCanvasLoop()
+                applyAudioAndVisibilityState()
+                runCatching {
+                    webView?.visibility = View.INVISIBLE
+                    webView?.onPause()
+                    webView?.pauseTimers()
+                }
+                if (usingCanvasFallback && isEngineVisible) {
+                    clearSurfaceToBlack()
+                }
+            }
+        }
+
+        private fun clearSurfaceToBlack() {
+            val holder = surfaceHolder ?: return
+            if (!holder.surface.isValid) return
+            var canvas: android.graphics.Canvas? = null
+            try {
+                canvas = holder.lockCanvas()
+                canvas?.drawColor(Color.BLACK)
+            } catch (_: Throwable) {
+            } finally {
+                if (canvas != null) {
+                    runCatching { holder.unlockCanvasAndPost(canvas) }
+                }
             }
         }
 
@@ -232,7 +331,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
                 if (startedHardware) {
                     usingCanvasFallback = false
                     loadActiveWebWallpaper()
-                    applyAudioAndVisibilityState()
+                    syncActivePlaybackAndVisibility()
                     return
                 }
             }
@@ -240,26 +339,25 @@ class HtmlLiveWallpaperService : WallpaperService() {
             usingCanvasFallback = true
             startCanvasFallbackWebView(width, height)
             loadActiveWebWallpaper()
-            applyAudioAndVisibilityState()
-            if (isEngineVisible) {
-                scheduleNextCanvasFrame()
-            }
+            syncActivePlaybackAndVisibility()
         }
 
         private fun startVideoEngine(holder: SurfaceHolder, path: String) {
             isVideoPrepared = false
+            videoSurfaceAttached = false
             runCatching {
+                val shouldAttachNow = shouldRenderLiveContentNow()
                 val mp = MediaPlayer().apply {
-                    setSurface(holder.surface)
+                    if (shouldAttachNow) {
+                        setSurface(holder.surface)
+                        videoSurfaceAttached = true
+                    }
                     setDataSource(path)
                     isLooping = true
                     setVideoScalingMode(MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING)
                     setOnPreparedListener { player ->
                         isVideoPrepared = true
-                        applyVideoVolume(player)
-                        if (isEngineVisible) {
-                            runCatching { player.start() }
-                        }
+                        syncActivePlaybackAndVisibility()
                     }
                     setOnErrorListener { _, what, extra ->
                         Log.w(TAG, "Video wallpaper error ($what, $extra)")
@@ -268,6 +366,9 @@ class HtmlLiveWallpaperService : WallpaperService() {
                     prepareAsync()
                 }
                 mediaPlayer = mp
+                if (!shouldAttachNow) {
+                    clearSurfaceToBlack()
+                }
             }.onFailure {
                 Log.w(TAG, "Failed to start video wallpaper player", it)
             }
@@ -384,8 +485,9 @@ class HtmlLiveWallpaperService : WallpaperService() {
         private fun applyVideoVolume(player: MediaPlayer?) {
             val mp = player ?: return
             val settings = repository.readSettings()
+            val activeNow = isEngineVisible && shouldRenderLiveContentNow()
             val allowSound = settings.soundEnabled &&
-                isEngineVisible &&
+                activeNow &&
                 !(settings.muteDuringOtherMedia && otherAppPlayingAudio)
             val vol = if (allowSound) settings.volume else 0f
             runCatching { mp.setVolume(vol, vol) }
@@ -398,13 +500,14 @@ class HtmlLiveWallpaperService : WallpaperService() {
             }
             val view = target ?: return
             val settings = repository.readSettings()
+            val activeNow = isEngineVisible && shouldRenderLiveContentNow()
             val allowSound = settings.soundEnabled &&
-                isEngineVisible &&
+                activeNow &&
                 !(settings.muteDuringOtherMedia && otherAppPlayingAudio)
             val js = AudioBridgeScript.buildApplyStateJs(
                 soundEnabled = allowSound,
                 volume = settings.volume,
-                visible = isEngineVisible
+                visible = activeNow
             )
             runCatching { view.evaluateJavascript(js, null) }
         }
@@ -432,7 +535,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
         }
 
         private fun scheduleNextCanvasFrame() {
-            if (!frameScheduled && !usingVideoEngine && usingCanvasFallback && isEngineVisible) {
+            if (!frameScheduled && !usingVideoEngine && usingCanvasFallback && isEngineVisible && shouldRenderLiveContentNow()) {
                 frameScheduled = true
                 Choreographer.getInstance().postFrameCallback(frameCallback)
             }
@@ -448,6 +551,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
         private fun tearDownRenderer() {
             stopCanvasLoop()
             isVideoPrepared = false
+            videoSurfaceAttached = false
             try {
                 mediaPlayer?.apply {
                     if (isPlaying) stop()
@@ -490,6 +594,30 @@ class HtmlLiveWallpaperService : WallpaperService() {
             otherAppPlayingAudio = audioManager.isMusicActive
         }
 
+        private fun registerLockStateReceiver() {
+            if (lockReceiverRegistered) return
+            val filter = IntentFilter().apply {
+                addAction(Intent.ACTION_USER_PRESENT)
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_SCREEN_OFF)
+            }
+            runCatching {
+                ContextCompat.registerReceiver(
+                    applicationContext,
+                    lockStateReceiver,
+                    filter,
+                    ContextCompat.RECEIVER_NOT_EXPORTED
+                )
+                lockReceiverRegistered = true
+            }
+        }
+
+        private fun unregisterLockStateReceiver() {
+            if (!lockReceiverRegistered) return
+            runCatching { applicationContext.unregisterReceiver(lockStateReceiver) }
+            lockReceiverRegistered = false
+        }
+
         private fun registerAudioPlaybackWatcher() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val cb = object : AudioManager.AudioPlaybackCallback() {
@@ -507,7 +635,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
                                 usage == AudioAttributes.USAGE_VOICE_COMMUNICATION
                         }
                         val wallpaperCurrentlyAllowed = settings.soundEnabled &&
-                            isEngineVisible && !otherAppPlayingAudio
+                            isEngineVisible && shouldRenderLiveContentNow() && !otherAppPlayingAudio
                         val externalDetected = if (wallpaperCurrentlyAllowed) {
                             mediaConfigs >= 2
                         } else {

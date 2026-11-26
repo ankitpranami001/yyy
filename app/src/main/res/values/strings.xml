@@ -1,15 +1,26 @@
 <resources>
-    <string name="app_name">LiveHTML</string>
-    <string name="wallpaper_service_label">LiveHTML Wallpaper</string>
-    <string name="wallpaper_service_description">Runs your uploaded HTML, Video, and GIF files live on your home and lock screen.</string>
+    <string name="app_name">Ankit</string>
+    <string name="wallpaper_service_label">Ankit Live Wallpaper</string>
+    <string name="wallpaper_service_description">Runs your uploaded HTML, Video, and GIF files live on your Home Screen, Lock Screen, or Both.</string>
 
     <string name="btn_upload_html">Upload HTML</string>
     <string name="btn_upload_video">Upload Video</string>
     <string name="btn_upload_gif">Upload GIF</string>
     <string name="label_live_wallpaper">Live Wallpaper</string>
 
-    <string name="btn_set_home_lock">Set Home &amp; Lock Screen</string>
-    <string name="status_live_active">Active Live</string>
+    <string name="btn_set_home_lock">Set Home / Lock Screen</string>
+    <string name="status_active_home">Home Only</string>
+    <string name="status_active_lock">Lock Only</string>
+    <string name="status_active_both">Home &amp; Lock</string>
+
+    <string name="apply_sheet_title">Where do you want to set it?</string>
+    <string name="apply_home_only">Home Screen Only</string>
+    <string name="apply_home_only_desc">Plays only on your Home Screen</string>
+    <string name="apply_lock_only">Lock Screen Only</string>
+    <string name="apply_lock_only_desc">Plays only on your Lock Screen</string>
+    <string name="apply_both">Both (Home &amp; Lock Screen)</string>
+    <string name="apply_both_desc">Plays on both Home and Lock screens</string>
+    <string name="apply_sheet_tip">In the next Android screen, tap Set Wallpaper. If your phone only shows Home &amp; Lock, choose it — Ankit automatically enforces your selected screen.</string>
 
     <string name="preview_mode_lock">Lock Screen</string>
     <string name="preview_mode_home">Home Screen</string>

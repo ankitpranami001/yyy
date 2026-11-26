@@ -3,6 +3,6 @@
     <item
         android:width="66dp"
         android:height="66dp"
-        android:drawable="@drawable/livehtml_app_icon_1795613248716"
+        android:drawable="@drawable/ankit_logo"
         android:gravity="center" />
 </layer-list>

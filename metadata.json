@@ -1,6 +1,6 @@
 {
-  "name": "LiveHTML",
-  "description": "Upload HTML files or ZIP bundles and run them as interactive live wallpapers with animations and sound.",
+  "name": "Ankit",
+  "description": "Upload HTML, Video, or GIF live wallpapers and set them on Home Screen, Lock Screen, or Both with animation and sound.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

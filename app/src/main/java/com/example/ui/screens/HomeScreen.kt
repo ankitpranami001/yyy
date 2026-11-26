@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -19,10 +20,14 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.GifBox
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Wallpaper
@@ -49,6 +54,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,6 +64,7 @@ import com.example.data.RenderEngineMode
 import com.example.data.WallpaperRepository
 import com.example.data.WallpaperSettings
 import com.example.data.WallpaperSource
+import com.example.data.WallpaperTarget
 import com.example.ui.MainUiState
 import com.example.ui.PhonePreviewStyle
 import com.example.ui.components.PhonePreviewMockup
@@ -75,7 +82,9 @@ fun HomeScreen(
     onUploadHtml: () -> Unit,
     onUploadVideo: () -> Unit,
     onUploadGif: () -> Unit,
-    onSetHomeLockWallpaper: () -> Unit,
+    onOpenApplySheet: () -> Unit,
+    onDismissApplySheet: () -> Unit,
+    onApplyForTarget: (WallpaperTarget) -> Unit,
     onPreviewStyleChange: (PhonePreviewStyle) -> Unit,
     onToggleSound: (Boolean) -> Unit,
     onToggleTheme: () -> Unit,
@@ -110,12 +119,31 @@ fun HomeScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color.White,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Image(
+                            painter = painterResource(id = R.drawable.ankit_logo),
+                            contentDescription = stringResource(R.string.app_name),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(2.dp)
+                        )
+                    }
                     Text(
                         text = stringResource(R.string.app_name),
                         style = MaterialTheme.typography.headlineSmall,
                         color = MaterialTheme.colorScheme.onBackground
                     )
                     if (uiState.isServiceActiveOnHomeScreen) {
+                        val activeLabel = when (uiState.settings.wallpaperTarget) {
+                            WallpaperTarget.HOME_ONLY -> stringResource(R.string.status_active_home)
+                            WallpaperTarget.LOCK_ONLY -> stringResource(R.string.status_active_lock)
+                            WallpaperTarget.BOTH -> stringResource(R.string.status_active_both)
+                        }
                         Surface(
                             shape = CircleShape,
                             color = EmeraldLive.copy(alpha = 0.14f)
@@ -132,7 +160,7 @@ fun HomeScreen(
                                         .background(EmeraldLive)
                                 )
                                 Text(
-                                    text = stringResource(R.string.status_live_active),
+                                    text = activeLabel,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = EmeraldLive
                                 )
@@ -171,7 +199,7 @@ fun HomeScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // ONLY 3 Upload Buttons in a single clean row
+            // ONLY 3 Upload Buttons in one clean row
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -259,9 +287,9 @@ fun HomeScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Bottom Set Home & Lock Screen primary button
+            // Bottom Set Home / Lock Screen primary button
             Button(
-                onClick = onSetHomeLockWallpaper,
+                onClick = onOpenApplySheet,
                 enabled = !uiState.isImporting,
                 shape = RoundedCornerShape(18.dp),
                 colors = ButtonDefaults.buttonColors(
@@ -287,6 +315,19 @@ fun HomeScreen(
         }
     }
 
+    if (uiState.showApplySheet) {
+        ModalBottomSheet(
+            onDismissRequest = onDismissApplySheet,
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = MaterialTheme.colorScheme.surface
+        ) {
+            ApplyTargetSheetContent(
+                selectedTarget = uiState.settings.wallpaperTarget,
+                onSelectTarget = onApplyForTarget
+            )
+        }
+    }
+
     if (uiState.showSettingsSheet) {
         ModalBottomSheet(
             onDismissRequest = onDismissSettings,
@@ -301,6 +342,134 @@ fun HomeScreen(
                 onTouchEnabledChange = onTouchEnabledChange,
                 onRenderModeChange = onRenderModeChange
             )
+        }
+    }
+}
+
+@Composable
+private fun ApplyTargetSheetContent(
+    selectedTarget: WallpaperTarget,
+    onSelectTarget: (WallpaperTarget) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            text = stringResource(R.string.apply_sheet_title),
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+
+        Spacer(modifier = Modifier.height(2.dp))
+
+        ApplyTargetOptionRow(
+            title = stringResource(R.string.apply_home_only),
+            subtitle = stringResource(R.string.apply_home_only_desc),
+            icon = Icons.Default.Home,
+            accent = CobaltAccent,
+            selected = selectedTarget == WallpaperTarget.HOME_ONLY,
+            onClick = { onSelectTarget(WallpaperTarget.HOME_ONLY) },
+            testTag = "apply_option_home_only"
+        )
+
+        ApplyTargetOptionRow(
+            title = stringResource(R.string.apply_lock_only),
+            subtitle = stringResource(R.string.apply_lock_only_desc),
+            icon = Icons.Default.Lock,
+            accent = VioletVideo,
+            selected = selectedTarget == WallpaperTarget.LOCK_ONLY,
+            onClick = { onSelectTarget(WallpaperTarget.LOCK_ONLY) },
+            testTag = "apply_option_lock_only"
+        )
+
+        ApplyTargetOptionRow(
+            title = stringResource(R.string.apply_both),
+            subtitle = stringResource(R.string.apply_both_desc),
+            icon = Icons.Default.Smartphone,
+            accent = EmeraldLive,
+            selected = selectedTarget == WallpaperTarget.BOTH,
+            onClick = { onSelectTarget(WallpaperTarget.BOTH) },
+            testTag = "apply_option_both"
+        )
+
+        Spacer(modifier = Modifier.height(2.dp))
+
+        Text(
+            text = stringResource(R.string.apply_sheet_tip),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun ApplyTargetOptionRow(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    accent: Color,
+    selected: Boolean,
+    onClick: () -> Unit,
+    testTag: String
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = if (selected) accent.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceContainerLow,
+        border = BorderStroke(
+            width = if (selected) 1.5.dp else 1.dp,
+            color = if (selected) accent else MaterialTheme.colorScheme.outline
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .testTag(testTag)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = accent.copy(alpha = 0.16f),
+                modifier = Modifier.size(40.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = accent,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (selected) {
+                Icon(
+                    imageVector = Icons.Default.CheckCircle,
+                    contentDescription = null,
+                    tint = accent,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
     }
 }

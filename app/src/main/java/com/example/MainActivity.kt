@@ -25,6 +25,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.data.WallpaperTarget
 import com.example.ui.MainViewModel
 import com.example.ui.screens.HomeScreen
 import com.example.ui.theme.LiveHtmlTheme
@@ -130,7 +131,12 @@ private fun LiveHtmlRoot(
                 onUploadGif = {
                     gifPicker.launch(arrayOf("image/gif"))
                 },
-                onSetHomeLockWallpaper = onLaunchWallpaperPicker,
+                onOpenApplySheet = { viewModel.setApplySheetVisible(true) },
+                onDismissApplySheet = { viewModel.setApplySheetVisible(false) },
+                onApplyForTarget = { target: WallpaperTarget ->
+                    viewModel.selectWallpaperTarget(target)
+                    onLaunchWallpaperPicker()
+                },
                 onPreviewStyleChange = viewModel::setPreviewStyle,
                 onToggleSound = viewModel::setSoundEnabled,
                 onToggleTheme = viewModel::toggleDarkTheme,

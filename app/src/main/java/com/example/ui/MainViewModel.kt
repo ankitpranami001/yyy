@@ -10,6 +10,7 @@ import com.example.data.RenderEngineMode
 import com.example.data.WallpaperItem
 import com.example.data.WallpaperRepository
 import com.example.data.WallpaperSettings
+import com.example.data.WallpaperTarget
 import com.example.wallpaper.HtmlLiveWallpaperService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -29,6 +30,7 @@ data class MainUiState(
     val isServiceActiveOnHomeScreen: Boolean = false,
     val isImporting: Boolean = false,
     val previewStyle: PhonePreviewStyle = PhonePreviewStyle.LOCK_SCREEN,
+    val showApplySheet: Boolean = false,
     val showSettingsSheet: Boolean = false,
     val statusMessage: String? = null,
     val previewReloadToken: Long = 0L
@@ -41,6 +43,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val isServiceActive = MutableStateFlow(checkIsOurWallpaperActive())
     private val isImporting = MutableStateFlow(false)
     private val previewStyle = MutableStateFlow(PhonePreviewStyle.LOCK_SCREEN)
+    private val showApplySheet = MutableStateFlow(false)
     private val showSettingsSheet = MutableStateFlow(false)
     private val statusMessage = MutableStateFlow<String?>(null)
     private val previewReloadToken = MutableStateFlow(0L)
@@ -51,6 +54,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         isServiceActive,
         isImporting,
         previewStyle,
+        showApplySheet,
         showSettingsSheet,
         statusMessage,
         previewReloadToken
@@ -61,9 +65,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val activeOnHome = values[2] as Boolean
         val importing = values[3] as Boolean
         val style = values[4] as PhonePreviewStyle
-        val sheet = values[5] as Boolean
-        val message = values[6] as String?
-        val token = values[7] as Long
+        val applySheet = values[5] as Boolean
+        val settingsSheet = values[6] as Boolean
+        val message = values[7] as String?
+        val token = values[8] as Long
 
         val active = list.firstOrNull { it.id == settings.activeWallpaperId } ?: list.firstOrNull()
         MainUiState(
@@ -72,7 +77,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             isServiceActiveOnHomeScreen = activeOnHome,
             isImporting = importing,
             previewStyle = style,
-            showSettingsSheet = sheet,
+            showApplySheet = applySheet,
+            showSettingsSheet = settingsSheet,
             statusMessage = message,
             previewReloadToken = token
         )
@@ -94,6 +100,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         previewStyle.value = style
     }
 
+    fun setApplySheetVisible(visible: Boolean) {
+        showApplySheet.value = visible
+    }
+
     fun setSettingsSheetVisible(visible: Boolean) {
         showSettingsSheet.value = visible
     }
@@ -104,6 +114,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun showMessage(msg: String) {
         statusMessage.value = msg
+    }
+
+    fun selectWallpaperTarget(target: WallpaperTarget) {
+        repository.updateSettings { it.copy(wallpaperTarget = target) }
+        previewStyle.value = when (target) {
+            WallpaperTarget.HOME_ONLY -> PhonePreviewStyle.HOME_SCREEN
+            WallpaperTarget.LOCK_ONLY -> PhonePreviewStyle.LOCK_SCREEN
+            WallpaperTarget.BOTH -> previewStyle.value
+        }
+        showApplySheet.value = false
     }
 
     fun importHtml(uri: Uri) {
@@ -137,7 +157,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         result.onSuccess { item ->
             previewReloadToken.value = System.currentTimeMillis()
             statusMessage.value = if (isServiceActive.value) {
-                "$label loaded: \"${item.name}\" (live screen updated)"
+                "$label loaded: \"${item.name}\" (updated live)"
             } else {
                 "$label ready: \"${item.name}\""
             }
