@@ -132,6 +132,12 @@ fun PhonePreviewMockup(
                                             volume = volume,
                                             modifier = Modifier.fillMaxSize()
                                         )
+                                    } else {
+                                        BuiltinShowcasePreview(
+                                            wallpaperId = activeWallpaper.id,
+                                            touchEnabled = touchEnabled,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
                                     }
                                 }
 
@@ -144,6 +150,12 @@ fun PhonePreviewMockup(
                                             fallbackUrl = url,
                                             repository = repository,
                                             reloadKey = Pair(activeWallpaper.id, reloadToken),
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    } else {
+                                        BuiltinShowcasePreview(
+                                            wallpaperId = activeWallpaper.id,
+                                            touchEnabled = touchEnabled,
                                             modifier = Modifier.fillMaxSize()
                                         )
                                     }

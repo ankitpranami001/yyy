@@ -11,6 +11,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -46,6 +48,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.data.WallpaperRepository
 import com.example.wallpaper.AudioBridgeScript
 import com.example.wallpaper.LocalWallpaperWebClient
+import kotlinx.coroutines.delay
 
 @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
 @Composable
@@ -184,16 +187,15 @@ private fun ManagedLiveWebView(
                     runCatching {
                         wv.onResume()
                         wv.resumeTimers()
+                        wv.invalidate()
                     }
                     pushAudioState(wv, true)
                 }
                 Lifecycle.Event.ON_PAUSE -> {
                     isResumed = false
                     pushAudioState(wv, false)
-                    runCatching {
-                        wv.onPause()
-                        wv.pauseTimers()
-                    }
+                    // NEVER call wv.pauseTimers() — it freezes HtmlLiveWallpaperService WebView globally!
+                    runCatching { wv.onPause() }
                 }
                 else -> Unit
             }
@@ -220,83 +222,110 @@ private fun ManagedLiveWebView(
         if (lastLoadedSignature != currentSignature) {
             lastLoadedSignature = currentSignature
             pageLoaded = false
-            runCatching { wv.loadUrl(url) }
+            runCatching {
+                wv.onResume()
+                wv.resumeTimers()
+                wv.loadUrl(url)
+            }
         }
     }
 
-    AndroidView(
-        modifier = modifier,
-        factory = { ctx ->
-            WebView(ctx).apply {
-                layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-                setBackgroundColor(Color.BLACK)
-                isVerticalScrollBarEnabled = false
-                isHorizontalScrollBarEnabled = false
-                overScrollMode = View.OVER_SCROLL_NEVER
-
-                setLayerType(
-                    if (useSoftwareLayer) View.LAYER_TYPE_SOFTWARE else View.LAYER_TYPE_HARDWARE,
-                    null
-                )
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
-                }
-
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
-                settings.mediaPlaybackRequiresUserGesture = false
-                settings.allowFileAccess = false
-                settings.allowContentAccess = false
-                settings.setSupportMultipleWindows(false)
-                settings.javaScriptCanOpenWindowsAutomatically = false
-                settings.useWideViewPort = true
-                settings.loadWithOverviewMode = true
-                settings.cacheMode = WebSettings.LOAD_NO_CACHE
-                settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-
-                setOnTouchListener { v, event ->
-                    if (!latestTouch) {
-                        true
-                    } else {
-                        if (event.action == MotionEvent.ACTION_DOWN) {
-                            v.parent?.requestDisallowInterceptTouchEvent(true)
-                        } else if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
-                            v.parent?.requestDisallowInterceptTouchEvent(false)
-                        }
-                        false
-                    }
-                }
-
-                webChromeClient = WebChromeClient()
-                webViewClient = LocalWallpaperWebClient(
-                    context = context.applicationContext,
-                    repository = repository,
-                    inlinePreviewProvider = { latestInlineHtml },
-                    onPageReady = { loaded ->
-                        pageLoaded = true
-                        pushAudioState(loaded, isResumed)
-                    },
-                    onRendererCrash = { crashedView, _ ->
-                        safelyDestroyWebView(crashedView ?: webViewRef)
-                        latestOnCrash()
-                    }
-                )
-
-                lastLoadedSignature = currentSignature
-                pageLoaded = false
-                loadUrl(url)
-                webViewRef = this
-            }
-        },
-        update = { view ->
-            if (webViewRef == null && !isDestroyed) {
-                webViewRef = view
-            }
+    // Safety timeout so loading indicator never sticks if an HTML page has slow external resources
+    LaunchedEffect(currentSignature, pageLoaded) {
+        if (!pageLoaded) {
+            delay(2500L)
+            pageLoaded = true
         }
-    )
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                WebView(ctx).apply {
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                    setBackgroundColor(Color.BLACK)
+                    isVerticalScrollBarEnabled = false
+                    isHorizontalScrollBarEnabled = false
+                    overScrollMode = View.OVER_SCROLL_NEVER
+
+                    setLayerType(
+                        if (useSoftwareLayer) View.LAYER_TYPE_SOFTWARE else View.LAYER_TYPE_HARDWARE,
+                        null
+                    )
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
+                    }
+
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    settings.mediaPlaybackRequiresUserGesture = false
+                    settings.allowFileAccess = false
+                    settings.allowContentAccess = false
+                    settings.setSupportMultipleWindows(false)
+                    settings.javaScriptCanOpenWindowsAutomatically = false
+                    settings.useWideViewPort = true
+                    settings.loadWithOverviewMode = true
+                    settings.cacheMode = WebSettings.LOAD_NO_CACHE
+                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+
+                    setOnTouchListener { v, event ->
+                        if (!latestTouch) {
+                            true
+                        } else {
+                            if (event.action == MotionEvent.ACTION_DOWN) {
+                                v.parent?.requestDisallowInterceptTouchEvent(true)
+                            } else if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
+                                v.parent?.requestDisallowInterceptTouchEvent(false)
+                            }
+                            false
+                        }
+                    }
+
+                    webChromeClient = WebChromeClient()
+                    webViewClient = LocalWallpaperWebClient(
+                        context = context.applicationContext,
+                        repository = repository,
+                        inlinePreviewProvider = { latestInlineHtml },
+                        onPageReady = { loaded ->
+                            pageLoaded = true
+                            pushAudioState(loaded, isResumed)
+                            loaded.invalidate()
+                        },
+                        onRendererCrash = { crashedView, _ ->
+                            safelyDestroyWebView(crashedView ?: webViewRef)
+                            latestOnCrash()
+                        }
+                    )
+
+                    onResume()
+                    resumeTimers()
+                    lastLoadedSignature = currentSignature
+                    pageLoaded = false
+                    loadUrl(url)
+                    webViewRef = this
+                }
+            },
+            update = { view ->
+                if (webViewRef == null && !isDestroyed) {
+                    webViewRef = view
+                }
+            }
+        )
+
+        if (!pageLoaded) {
+            CircularProgressIndicator(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(26.dp),
+                strokeWidth = 2.5.dp,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+    }
 }
 
 private const val MAX_RENDERER_RECOVERIES = 2
