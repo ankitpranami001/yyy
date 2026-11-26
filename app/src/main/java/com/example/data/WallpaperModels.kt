@@ -4,7 +4,8 @@ enum class WallpaperSource {
     BUILTIN,
     UPLOADED_HTML,
     UPLOADED_ZIP,
-    CUSTOM_CODE
+    UPLOADED_VIDEO,
+    UPLOADED_GIF
 }
 
 enum class RenderEngineMode {
@@ -33,11 +34,10 @@ data class WallpaperSettings(
     val muteDuringOtherMedia: Boolean = true,
     val touchEnabled: Boolean = true,
     val targetFps: Int = 30,
-    val renderMode: RenderEngineMode = RenderEngineMode.AUTO_HARDWARE
+    val renderMode: RenderEngineMode = RenderEngineMode.AUTO_HARDWARE,
+    val darkTheme: Boolean = false
 ) {
     companion object {
         const val BUILTIN_AURORA_ID = "builtin_aurora_pulse"
-        const val BUILTIN_CYBER_RAIN_ID = "builtin_cyber_rain"
-        const val BUILTIN_SOLAR_ORBIT_ID = "builtin_solar_orbit"
     }
 }

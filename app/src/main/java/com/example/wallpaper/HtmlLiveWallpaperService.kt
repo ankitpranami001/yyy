@@ -10,6 +10,7 @@ import android.hardware.display.VirtualDisplay
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.AudioPlaybackConfiguration
+import android.media.MediaPlayer
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -26,6 +27,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.example.data.RenderEngineMode
 import com.example.data.WallpaperRepository
+import com.example.data.WallpaperSource
 
 class HtmlLiveWallpaperService : WallpaperService() {
 
@@ -40,11 +42,14 @@ class HtmlLiveWallpaperService : WallpaperService() {
         private var virtualDisplay: VirtualDisplay? = null
         private var presentation: WallpaperPresentation? = null
         private var webView: WebView? = null
+        private var mediaPlayer: MediaPlayer? = null
+        private var isVideoPrepared: Boolean = false
 
         private var surfaceWidth: Int = 0
         private var surfaceHeight: Int = 0
-        private var currentLoadedUrl: String? = null
+        private var currentActiveId: String? = null
         private var currentRevision: Long = -1L
+        private var usingVideoEngine: Boolean = false
         private var usingCanvasFallback: Boolean = false
         private var rendererCrashCount: Int = 0
         private var isEngineVisible: Boolean = false
@@ -56,16 +61,23 @@ class HtmlLiveWallpaperService : WallpaperService() {
 
         private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { prefs, _ ->
             mainHandler.post {
+                val active = repository.getActiveWallpaper()
                 val newSettings = repository.readSettings()
                 val newRevision = prefs.getLong("content_revision", 0L)
-                val targetUrl = repository.resolveWallpaperUrl(repository.getActiveWallpaper())
-
+                val needsVideo = active.source == WallpaperSource.UPLOADED_VIDEO
                 val wantsFallback = newSettings.renderMode == RenderEngineMode.COMPATIBILITY_CANVAS
-                if (wantsFallback != usingCanvasFallback && surfaceWidth > 0 && surfaceHeight > 0 && rendererCrashCount == 0) {
-                    rebuildRenderer(surfaceHolder, surfaceWidth, surfaceHeight, forceCanvasFallback = wantsFallback)
-                } else if (targetUrl != currentLoadedUrl || newRevision != currentRevision) {
-                    currentRevision = newRevision
-                    loadActiveWallpaper()
+
+                if (surfaceWidth > 0 && surfaceHeight > 0) {
+                    val modeChanged = needsVideo != usingVideoEngine ||
+                        (!needsVideo && wantsFallback != usingCanvasFallback && rendererCrashCount == 0)
+                    val itemChanged = active.id != currentActiveId || newRevision != currentRevision
+                    if (modeChanged || (needsVideo && itemChanged)) {
+                        rebuildRenderer(surfaceHolder, surfaceWidth, surfaceHeight, forceCanvasFallback = wantsFallback)
+                    } else if (itemChanged) {
+                        currentActiveId = active.id
+                        currentRevision = newRevision
+                        loadActiveWebWallpaper()
+                    }
                 }
                 applyAudioAndVisibilityState()
             }
@@ -74,7 +86,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
         private val frameCallback = object : Choreographer.FrameCallback {
             override fun doFrame(frameTimeNanos: Long) {
                 frameScheduled = false
-                if (!usingCanvasFallback || !isEngineVisible) return
+                if (usingVideoEngine || !usingCanvasFallback || !isEngineVisible) return
                 val settings = repository.readSettings()
                 val minIntervalNanos = 1_000_000_000L / settings.targetFps.coerceIn(15, 60)
                 if (frameTimeNanos - lastFrameNanos >= minIntervalNanos) {
@@ -118,20 +130,35 @@ class HtmlLiveWallpaperService : WallpaperService() {
             mainHandler.post {
                 if (visible) {
                     checkOtherMediaBeforeUnmuting()
-                    runCatching {
-                        webView?.onResume()
-                        webView?.resumeTimers()
-                    }
-                    applyAudioAndVisibilityState()
-                    if (usingCanvasFallback) {
-                        scheduleNextCanvasFrame()
+                    if (usingVideoEngine) {
+                        applyAudioAndVisibilityState()
+                        if (isVideoPrepared) {
+                            runCatching {
+                                if (mediaPlayer?.isPlaying == false) mediaPlayer?.start()
+                            }
+                        }
+                    } else {
+                        runCatching {
+                            webView?.onResume()
+                            webView?.resumeTimers()
+                        }
+                        applyAudioAndVisibilityState()
+                        if (usingCanvasFallback) {
+                            scheduleNextCanvasFrame()
+                        }
                     }
                 } else {
                     stopCanvasLoop()
                     applyAudioAndVisibilityState()
-                    runCatching {
-                        webView?.onPause()
-                        webView?.pauseTimers()
+                    if (usingVideoEngine) {
+                        runCatching {
+                            if (mediaPlayer?.isPlaying == true) mediaPlayer?.pause()
+                        }
+                    } else {
+                        runCatching {
+                            webView?.onPause()
+                            webView?.pauseTimers()
+                        }
                     }
                 }
             }
@@ -139,7 +166,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
 
         override fun onTouchEvent(event: MotionEvent?) {
             super.onTouchEvent(event)
-            if (event == null) return
+            if (event == null || usingVideoEngine) return
             val settings = repository.readSettings()
             if (!settings.touchEnabled) return
             val copy = MotionEvent.obtain(event)
@@ -185,23 +212,64 @@ class HtmlLiveWallpaperService : WallpaperService() {
             val surface = holder.surface
             if (surface == null || !surface.isValid) return
 
+            val active = repository.getActiveWallpaper()
+            currentActiveId = active.id
+            currentRevision = repository.getPrefs().getLong("content_revision", 0L)
+
+            if (active.source == WallpaperSource.UPLOADED_VIDEO) {
+                val videoFile = repository.getMediaFile(active)
+                if (videoFile != null && videoFile.exists()) {
+                    usingVideoEngine = true
+                    usingCanvasFallback = false
+                    startVideoEngine(holder, videoFile.absolutePath)
+                    return
+                }
+            }
+
+            usingVideoEngine = false
             if (!forceCanvasFallback) {
                 val startedHardware = startHardwarePresentation(surface, width, height)
                 if (startedHardware) {
                     usingCanvasFallback = false
-                    loadActiveWallpaper()
+                    loadActiveWebWallpaper()
                     applyAudioAndVisibilityState()
                     return
                 }
             }
 
-            // Fallback to universal software Canvas rendering
             usingCanvasFallback = true
             startCanvasFallbackWebView(width, height)
-            loadActiveWallpaper()
+            loadActiveWebWallpaper()
             applyAudioAndVisibilityState()
             if (isEngineVisible) {
                 scheduleNextCanvasFrame()
+            }
+        }
+
+        private fun startVideoEngine(holder: SurfaceHolder, path: String) {
+            isVideoPrepared = false
+            runCatching {
+                val mp = MediaPlayer().apply {
+                    setSurface(holder.surface)
+                    setDataSource(path)
+                    isLooping = true
+                    setVideoScalingMode(MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING)
+                    setOnPreparedListener { player ->
+                        isVideoPrepared = true
+                        applyVideoVolume(player)
+                        if (isEngineVisible) {
+                            runCatching { player.start() }
+                        }
+                    }
+                    setOnErrorListener { _, what, extra ->
+                        Log.w(TAG, "Video wallpaper error ($what, $extra)")
+                        true
+                    }
+                    prepareAsync()
+                }
+                mediaPlayer = mp
+            }.onFailure {
+                Log.w(TAG, "Failed to start video wallpaper player", it)
             }
         }
 
@@ -307,15 +375,27 @@ class HtmlLiveWallpaperService : WallpaperService() {
             }
         }
 
-        private fun loadActiveWallpaper() {
+        private fun loadActiveWebWallpaper() {
             val active = repository.getActiveWallpaper()
             val url = repository.resolveWallpaperUrl(active)
-            currentLoadedUrl = url
-            currentRevision = repository.getPrefs().getLong("content_revision", 0L)
             runCatching { webView?.loadUrl(url) }
         }
 
+        private fun applyVideoVolume(player: MediaPlayer?) {
+            val mp = player ?: return
+            val settings = repository.readSettings()
+            val allowSound = settings.soundEnabled &&
+                isEngineVisible &&
+                !(settings.muteDuringOtherMedia && otherAppPlayingAudio)
+            val vol = if (allowSound) settings.volume else 0f
+            runCatching { mp.setVolume(vol, vol) }
+        }
+
         private fun applyAudioAndVisibilityState(target: WebView? = webView) {
+            if (usingVideoEngine) {
+                applyVideoVolume(mediaPlayer)
+                return
+            }
             val view = target ?: return
             val settings = repository.readSettings()
             val allowSound = settings.soundEnabled &&
@@ -352,7 +432,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
         }
 
         private fun scheduleNextCanvasFrame() {
-            if (!frameScheduled && usingCanvasFallback && isEngineVisible) {
+            if (!frameScheduled && !usingVideoEngine && usingCanvasFallback && isEngineVisible) {
                 frameScheduled = true
                 Choreographer.getInstance().postFrameCallback(frameCallback)
             }
@@ -367,6 +447,16 @@ class HtmlLiveWallpaperService : WallpaperService() {
 
         private fun tearDownRenderer() {
             stopCanvasLoop()
+            isVideoPrepared = false
+            try {
+                mediaPlayer?.apply {
+                    if (isPlaying) stop()
+                    reset()
+                    release()
+                }
+            } catch (_: Throwable) {
+            }
+            mediaPlayer = null
             try {
                 webView?.apply {
                     stopLoading()

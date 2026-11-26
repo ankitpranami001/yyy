@@ -1,61 +1,31 @@
 <resources>
     <string name="app_name">LiveHTML</string>
     <string name="wallpaper_service_label">LiveHTML Wallpaper</string>
-    <string name="wallpaper_service_description">Runs your uploaded HTML5 animations and sound live on your home screen.</string>
+    <string name="wallpaper_service_description">Runs your uploaded HTML, Video, and GIF files live on your home and lock screen.</string>
 
-    <string name="nav_gallery">Gallery</string>
-    <string name="nav_codelab">Code Lab</string>
-    <string name="nav_controls">Controls</string>
+    <string name="btn_upload_html">Upload HTML</string>
+    <string name="btn_upload_video">Upload Video</string>
+    <string name="btn_upload_gif">Upload GIF</string>
+    <string name="label_live_wallpaper">Live Wallpaper</string>
 
-    <string name="status_active_wallpaper">Active on Home Screen</string>
-    <string name="status_not_set_wallpaper">Ready to Apply</string>
+    <string name="btn_set_home_lock">Set Home &amp; Lock Screen</string>
+    <string name="status_live_active">Active Live</string>
 
-    <string name="action_upload_html">Upload HTML / ZIP</string>
-    <string name="action_set_wallpaper">Set as Live Wallpaper</string>
-    <string name="action_update_wallpaper">Applied Live</string>
-    <string name="action_preview_fullscreen">Fullscreen</string>
-    <string name="action_new_code">Code New</string>
-    <string name="action_edit_code">Edit HTML</string>
-    <string name="action_delete">Delete</string>
-    <string name="action_save_apply">Save &amp; Select</string>
-    <string name="action_back">Back</string>
+    <string name="preview_mode_lock">Lock Screen</string>
+    <string name="preview_mode_home">Home Screen</string>
+    <string name="preview_empty_hint">Upload HTML, Video, or GIF to preview</string>
 
-    <string name="section_my_uploads">My HTML Files</string>
-    <string name="section_builtin_showcase">Built-in Showcase</string>
-
-    <string name="empty_uploads_title">No HTML files uploaded yet</string>
-    <string name="empty_uploads_subtitle">Pick any .html file or .zip bundle (with CSS, JS, MP3/OGG sound, or images) from your phone to run it as a live wallpaper.</string>
-
-    <string name="controls_audio_section">Sound &amp; Audio</string>
-    <string name="controls_sound_enabled">Enable Wallpaper Sound</string>
-    <string name="controls_sound_desc">Allows HTML5 audio, video sound, and Web Audio API</string>
+    <string name="settings_title">Wallpaper Controls</string>
+    <string name="controls_sound_enabled">Enable Sound</string>
+    <string name="controls_sound_desc">Play HTML audio and video sound</string>
     <string name="controls_volume">Sound Volume</string>
     <string name="controls_mute_other_media">Mute When Other Audio Plays</string>
-    <string name="controls_mute_other_media_desc">Automatically silences wallpaper during music, calls, or videos</string>
-
-    <string name="controls_interaction_section">Engine &amp; Interaction</string>
+    <string name="controls_mute_other_media_desc">Auto-mute during music, calls, or videos</string>
     <string name="controls_touch_enabled">Touch Interaction</string>
-    <string name="controls_touch_desc">Forward home screen taps and swipes to your HTML canvas</string>
-    <string name="controls_render_mode">Render Engine</string>
-    <string name="controls_render_hardware">Hardware Accelerated (Best for WebGL &amp; 60fps)</string>
-    <string name="controls_render_compat">Compatibility Canvas (Universal fallback)</string>
-    <string name="controls_fps_title">Compatibility Frame Rate</string>
+    <string name="controls_touch_desc">Forward screen taps to HTML wallpaper</string>
+    <string name="controls_render_mode">HTML Render Engine</string>
+    <string name="controls_render_hardware">Hardware Accelerated</string>
+    <string name="controls_render_compat">Compatibility Canvas</string>
 
-    <string name="controls_guide_title">How It Works</string>
-    <string name="controls_guide_step_1">1. Tap Upload HTML / ZIP in Gallery to import your HTML file or full ZIP bundle (index.html + audio/CSS/JS).</string>
-    <string name="controls_guide_step_2">2. Tap Set as Live Wallpaper and confirm in Android\'s system wallpaper preview.</string>
-    <string name="controls_guide_step_3">3. Once active, switching files or sound settings inside LiveHTML updates your home screen instantly.</string>
-
-    <string name="codelab_title_hint">Wallpaper name</string>
-    <string name="codelab_code_hint">Paste or write HTML5 / CSS / JS code here...</string>
-    <string name="codelab_mode_code">Code</string>
-    <string name="codelab_mode_preview">Live Preview</string>
-    <string name="codelab_template_btn">Load Template</string>
-
-    <string name="msg_import_success">Imported %1$s and selected!</string>
-    <string name="msg_import_error">Could not import file: %1$s</string>
     <string name="msg_wallpaper_picker_error">Unable to open system live wallpaper picker on this device.</string>
-    <string name="msg_saved_code">Saved \"%1$s\" to My HTML Files</string>
-    <string name="msg_deleted">Removed \"%1$s\"</string>
-    <string name="msg_live_updated">Home screen updated to \"%1$s\"</string>
 </resources>

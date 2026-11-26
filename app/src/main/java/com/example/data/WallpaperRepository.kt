@@ -55,28 +55,8 @@ class WallpaperRepository(private val appContext: Context) {
             source = WallpaperSource.BUILTIN,
             sizeBytes = 6400L,
             createdAt = 1L,
-            accentHex = "#22D3EE",
-            description = "Flowing aurora ribbons with touch ripples & crystal Web Audio chimes"
-        ),
-        WallpaperItem(
-            id = WallpaperSettings.BUILTIN_CYBER_RAIN_ID,
-            name = "Cyber Rain",
-            entryFile = "index.html",
-            source = WallpaperSource.BUILTIN,
-            sizeBytes = 5800L,
-            createdAt = 2L,
-            accentHex = "#FF7A59",
-            description = "Neon rainfall streaks, lightning taps & procedural rain ambiance"
-        ),
-        WallpaperItem(
-            id = WallpaperSettings.BUILTIN_SOLAR_ORBIT_ID,
-            name = "Solar Clock Orbit",
-            entryFile = "index.html",
-            source = WallpaperSource.BUILTIN,
-            sizeBytes = 5200L,
-            createdAt = 3L,
-            accentHex = "#FACC15",
-            description = "Live orbital clock with planetary rings & harmonic second ticks"
+            accentHex = "#0EA5E9",
+            description = "Default live wallpaper"
         )
     )
 
@@ -98,12 +78,17 @@ class WallpaperRepository(private val appContext: Context) {
         }
     }
 
-    fun builtInAssetFolder(id: String): String = when (id) {
-        WallpaperSettings.BUILTIN_AURORA_ID -> "aurora_pulse"
-        WallpaperSettings.BUILTIN_CYBER_RAIN_ID -> "cyber_rain"
-        WallpaperSettings.BUILTIN_SOLAR_ORBIT_ID -> "solar_orbit"
-        else -> "aurora_pulse"
+    fun getMediaFile(item: WallpaperItem): File? {
+        if (item.isBuiltIn) return null
+        val dir = getUserWallpaperDir(item.id)
+        return when (item.source) {
+            WallpaperSource.UPLOADED_VIDEO -> File(dir, item.entryFile).takeIf { it.exists() }
+            WallpaperSource.UPLOADED_GIF -> File(dir, GIF_FILE_NAME).takeIf { it.exists() }
+            else -> File(dir, item.entryFile).takeIf { it.exists() }
+        }
     }
+
+    fun builtInAssetFolder(id: String): String = "aurora_pulse"
 
     fun getUserWallpaperDir(id: String): File = File(wallpapersRootDir, id)
 
@@ -121,7 +106,8 @@ class WallpaperRepository(private val appContext: Context) {
             muteDuringOtherMedia = prefs.getBoolean(KEY_MUTE_OTHER_MEDIA, true),
             touchEnabled = prefs.getBoolean(KEY_TOUCH_ENABLED, true),
             targetFps = prefs.getInt(KEY_TARGET_FPS, 30).coerceIn(15, 60),
-            renderMode = renderMode
+            renderMode = renderMode,
+            darkTheme = prefs.getBoolean(KEY_DARK_THEME, false)
         )
     }
 
@@ -135,6 +121,7 @@ class WallpaperRepository(private val appContext: Context) {
             .putBoolean(KEY_TOUCH_ENABLED, updated.touchEnabled)
             .putInt(KEY_TARGET_FPS, updated.targetFps.coerceIn(15, 60))
             .putString(KEY_RENDER_MODE, updated.renderMode.name)
+            .putBoolean(KEY_DARK_THEME, updated.darkTheme)
             .putLong(KEY_REVISION, System.currentTimeMillis())
             .apply()
         _settings.value = updated
@@ -144,16 +131,11 @@ class WallpaperRepository(private val appContext: Context) {
         updateSettings { it.copy(activeWallpaperId = id) }
     }
 
-    fun notifyContentModified() {
-        prefs.edit().putLong(KEY_REVISION, System.currentTimeMillis()).apply()
-    }
-
-    suspend fun importFromUri(uri: Uri): Result<WallpaperItem> = withContext(Dispatchers.IO) {
+    suspend fun importHtmlOrZip(uri: Uri): Result<WallpaperItem> = withContext(Dispatchers.IO) {
         runCatching {
-            val resolver = appContext.contentResolver
             val rawName = queryDisplayName(uri) ?: "wallpaper_${System.currentTimeMillis()}.html"
             val lowerName = rawName.lowercase()
-            val id = "user_${UUID.randomUUID().toString().replace("-", "").take(10)}"
+            val id = "html_${UUID.randomUUID().toString().replace("-", "").take(10)}"
             val targetDir = File(wallpapersRootDir, id).apply { mkdirs() }
 
             val item = if (lowerName.endsWith(".zip")) {
@@ -161,16 +143,126 @@ class WallpaperRepository(private val appContext: Context) {
             } else {
                 importSingleHtml(uri, rawName, id, targetDir)
             }
-
-            val existing = readUserWallpapers().toMutableList()
-            existing.add(0, item)
-            saveUserWallpapers(existing)
-            selectWallpaper(item.id)
-            _wallpapers.value = loadAllWallpapers()
-            item
-        }.onFailure {
-            // Cleanup handled inside helpers on failure
+            registerImportedItem(item)
         }
+    }
+
+    suspend fun importVideo(uri: Uri): Result<WallpaperItem> = withContext(Dispatchers.IO) {
+        runCatching {
+            val rawName = queryDisplayName(uri) ?: "video_${System.currentTimeMillis()}.mp4"
+            val ext = rawName.substringAfterLast('.', "mp4")
+                .lowercase()
+                .filter { it.isLetterOrDigit() }
+                .ifBlank { "mp4" }
+            val fileName = "video.$ext"
+            val id = "vid_${UUID.randomUUID().toString().replace("-", "").take(10)}"
+            val targetDir = File(wallpapersRootDir, id).apply { mkdirs() }
+            val destFile = File(targetDir, fileName)
+
+            val totalBytes = copyUriToFile(uri, destFile, MAX_VIDEO_BYTES, targetDir)
+            val cleanName = cleanDisplayName(rawName, "Video Wallpaper")
+
+            val item = WallpaperItem(
+                id = id,
+                name = cleanName,
+                entryFile = fileName,
+                source = WallpaperSource.UPLOADED_VIDEO,
+                sizeBytes = totalBytes,
+                createdAt = System.currentTimeMillis(),
+                accentHex = "#8B5CF6",
+                description = rawName
+            )
+            registerImportedItem(item)
+        }
+    }
+
+    suspend fun importGif(uri: Uri): Result<WallpaperItem> = withContext(Dispatchers.IO) {
+        runCatching {
+            val rawName = queryDisplayName(uri) ?: "animation_${System.currentTimeMillis()}.gif"
+            val id = "gif_${UUID.randomUUID().toString().replace("-", "").take(10)}"
+            val targetDir = File(wallpapersRootDir, id).apply { mkdirs() }
+            val gifFile = File(targetDir, GIF_FILE_NAME)
+
+            val totalBytes = copyUriToFile(uri, gifFile, MAX_IMPORT_BYTES, targetDir)
+
+            // Generate lightweight full-bleed HTML wrapper for Live Wallpaper WebView engine
+            val wrapperHtml = """
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
+                <style>
+                  * { margin: 0; padding: 0; box-sizing: border-box; }
+                  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+                  img { width: 100%; height: 100%; object-fit: cover; display: block; }
+                </style>
+                </head>
+                <body><img src="$GIF_FILE_NAME" alt="GIF Wallpaper"/></body>
+                </html>
+            """.trimIndent()
+            File(targetDir, "index.html").writeText(wrapperHtml, Charsets.UTF_8)
+
+            val cleanName = cleanDisplayName(rawName, "GIF Wallpaper")
+            val item = WallpaperItem(
+                id = id,
+                name = cleanName,
+                entryFile = "index.html",
+                source = WallpaperSource.UPLOADED_GIF,
+                sizeBytes = totalBytes,
+                createdAt = System.currentTimeMillis(),
+                accentHex = "#F97316",
+                description = rawName
+            )
+            registerImportedItem(item)
+        }
+    }
+
+    private fun registerImportedItem(item: WallpaperItem): WallpaperItem {
+        val existing = readUserWallpapers().toMutableList()
+        // Keep storage tidy (keep latest 10 uploads)
+        while (existing.size >= 10) {
+            val removed = existing.removeAt(existing.lastIndex)
+            File(wallpapersRootDir, removed.id).deleteRecursively()
+        }
+        existing.add(0, item)
+        saveUserWallpapers(existing)
+        selectWallpaper(item.id)
+        _wallpapers.value = loadAllWallpapers()
+        return item
+    }
+
+    private fun copyUriToFile(
+        uri: Uri,
+        destFile: File,
+        maxBytes: Long,
+        cleanupDir: File
+    ): Long {
+        var totalBytes = 0L
+        appContext.contentResolver.openInputStream(uri)?.use { input ->
+            FileOutputStream(destFile).use { output ->
+                val buffer = ByteArray(32 * 1024)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read <= 0) break
+                    totalBytes += read
+                    if (totalBytes > maxBytes) {
+                        cleanupDir.deleteRecursively()
+                        throw IllegalArgumentException("File size exceeds allowed limit")
+                    }
+                    output.write(buffer, 0, read)
+                }
+            }
+        } ?: run {
+            cleanupDir.deleteRecursively()
+            throw IllegalStateException("Cannot open selected file")
+        }
+
+        if (totalBytes == 0L) {
+            cleanupDir.deleteRecursively()
+            throw IllegalArgumentException("Selected file is empty")
+        }
+        return totalBytes
     }
 
     private fun importSingleHtml(
@@ -180,47 +272,17 @@ class WallpaperRepository(private val appContext: Context) {
         targetDir: File
     ): WallpaperItem {
         val destFile = File(targetDir, "index.html")
-        var totalBytes = 0L
-        appContext.contentResolver.openInputStream(uri)?.use { input ->
-            FileOutputStream(destFile).use { output ->
-                val buffer = ByteArray(16 * 1024)
-                while (true) {
-                    val read = input.read(buffer)
-                    if (read <= 0) break
-                    totalBytes += read
-                    if (totalBytes > MAX_IMPORT_BYTES) {
-                        targetDir.deleteRecursively()
-                        throw IllegalArgumentException("HTML file exceeds 100 MB limit")
-                    }
-                    output.write(buffer, 0, read)
-                }
-            }
-        } ?: run {
-            targetDir.deleteRecursively()
-            throw IllegalStateException("Cannot open selected file")
-        }
-
-        if (totalBytes == 0L) {
-            targetDir.deleteRecursively()
-            throw IllegalArgumentException("Selected file is empty")
-        }
-
-        val cleanName = rawName
-            .substringBeforeLast('.')
-            .replace('_', ' ')
-            .replace('-', ' ')
-            .trim()
-            .ifBlank { "Custom HTML" }
+        val totalBytes = copyUriToFile(uri, destFile, MAX_IMPORT_BYTES, targetDir)
 
         return WallpaperItem(
             id = id,
-            name = cleanName.take(40),
+            name = cleanDisplayName(rawName, "HTML Wallpaper"),
             entryFile = "index.html",
             source = WallpaperSource.UPLOADED_HTML,
             sizeBytes = totalBytes,
             createdAt = System.currentTimeMillis(),
-            accentHex = pickAccentForId(id),
-            description = "Uploaded HTML file ($rawName)"
+            accentHex = "#0EA5E9",
+            description = rawName
         )
     }
 
@@ -290,10 +352,9 @@ class WallpaperRepository(private val appContext: Context) {
 
         if (htmlCandidates.isEmpty()) {
             targetDir.deleteRecursively()
-            throw IllegalArgumentException("No .html file found inside ZIP bundle")
+            throw IllegalArgumentException("No .html file found inside ZIP archive")
         }
 
-        // Prefer shallowest index.html, otherwise shallowest .html file
         val chosenEntry = htmlCandidates.sortedWith(
             compareBy<String>(
                 { !it.substringAfterLast('/').equals("index.html", ignoreCase = true) },
@@ -302,100 +363,26 @@ class WallpaperRepository(private val appContext: Context) {
             )
         ).first()
 
-        val cleanName = rawName
-            .substringBeforeLast('.')
-            .replace('_', ' ')
-            .replace('-', ' ')
-            .trim()
-            .ifBlank { "HTML Bundle" }
-
         return WallpaperItem(
             id = id,
-            name = cleanName.take(40),
+            name = cleanDisplayName(rawName, "HTML Bundle"),
             entryFile = chosenEntry,
             source = WallpaperSource.UPLOADED_ZIP,
             sizeBytes = totalBytes,
             createdAt = System.currentTimeMillis(),
-            accentHex = pickAccentForId(id),
-            description = "ZIP bundle ($fileCount files • $chosenEntry)"
+            accentHex = "#10B981",
+            description = "$fileCount files • $chosenEntry"
         )
     }
 
-    suspend fun saveCustomHtml(
-        name: String,
-        htmlContent: String,
-        existingId: String? = null
-    ): Result<WallpaperItem> = withContext(Dispatchers.IO) {
-        runCatching {
-            val trimmedName = name.trim().ifBlank { "Custom Creation" }.take(40)
-            val existingList = readUserWallpapers().toMutableList()
-            val existingIdx = existingId?.let { id -> existingList.indexOfFirst { it.id == id } } ?: -1
-
-            val item = if (existingIdx >= 0) {
-                val old = existingList[existingIdx]
-                val targetFile = File(File(wallpapersRootDir, old.id), old.entryFile)
-                targetFile.parentFile?.mkdirs()
-                targetFile.writeText(htmlContent, Charsets.UTF_8)
-                val updated = old.copy(
-                    name = trimmedName,
-                    sizeBytes = targetFile.length(),
-                    createdAt = System.currentTimeMillis()
-                )
-                existingList[existingIdx] = updated
-                updated
-            } else {
-                val id = "code_${UUID.randomUUID().toString().replace("-", "").take(10)}"
-                val dir = File(wallpapersRootDir, id).apply { mkdirs() }
-                val targetFile = File(dir, "index.html")
-                targetFile.writeText(htmlContent, Charsets.UTF_8)
-                val created = WallpaperItem(
-                    id = id,
-                    name = trimmedName,
-                    entryFile = "index.html",
-                    source = WallpaperSource.CUSTOM_CODE,
-                    sizeBytes = targetFile.length(),
-                    createdAt = System.currentTimeMillis(),
-                    accentHex = pickAccentForId(id),
-                    description = "Created in Code Lab"
-                )
-                existingList.add(0, created)
-                created
-            }
-
-            saveUserWallpapers(existingList)
-            selectWallpaper(item.id)
-            notifyContentModified()
-            _wallpapers.value = loadAllWallpapers()
-            item
-        }
-    }
-
-    suspend fun readWallpaperHtml(item: WallpaperItem): String = withContext(Dispatchers.IO) {
-        runCatching {
-            if (item.isBuiltIn) {
-                val folder = builtInAssetFolder(item.id)
-                appContext.assets.open("wallpapers/$folder/${item.entryFile}")
-                    .bufferedReader(Charsets.UTF_8).use { it.readText() }
-            } else {
-                val file = File(File(wallpapersRootDir, item.id), item.entryFile)
-                if (file.exists()) file.readText(Charsets.UTF_8) else ""
-            }
-        }.getOrDefault("")
-    }
-
-    suspend fun deleteWallpaper(id: String): Boolean = withContext(Dispatchers.IO) {
-        val current = readUserWallpapers().toMutableList()
-        val removed = current.removeAll { it.id == id }
-        if (removed) {
-            File(wallpapersRootDir, id).deleteRecursively()
-            saveUserWallpapers(current)
-            if (readSettings().activeWallpaperId == id) {
-                val fallback = current.firstOrNull()?.id ?: WallpaperSettings.BUILTIN_AURORA_ID
-                selectWallpaper(fallback)
-            }
-            _wallpapers.value = loadAllWallpapers()
-        }
-        removed
+    private fun cleanDisplayName(rawName: String, fallback: String): String {
+        return rawName
+            .substringBeforeLast('.')
+            .replace('_', ' ')
+            .replace('-', ' ')
+            .trim()
+            .ifBlank { fallback }
+            .take(36)
     }
 
     private fun loadAllWallpapers(): List<WallpaperItem> {
@@ -416,15 +403,17 @@ class WallpaperRepository(private val appContext: Context) {
                     add(
                         WallpaperItem(
                             id = id,
-                            name = obj.optString("name", "HTML Wallpaper"),
+                            name = obj.optString("name", "Live Wallpaper"),
                             entryFile = entry,
                             source = runCatching {
-                                WallpaperSource.valueOf(obj.optString("source", WallpaperSource.UPLOADED_HTML.name))
+                                WallpaperSource.valueOf(
+                                    obj.optString("source", WallpaperSource.UPLOADED_HTML.name)
+                                )
                             }.getOrDefault(WallpaperSource.UPLOADED_HTML),
                             sizeBytes = obj.optLong("sizeBytes", entryFileObj.length()),
                             createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
-                            accentHex = obj.optString("accentHex", "#22D3EE"),
-                            description = obj.optString("description", "Uploaded HTML wallpaper")
+                            accentHex = obj.optString("accentHex", "#0EA5E9"),
+                            description = obj.optString("description", "")
                         )
                     )
                 }
@@ -461,17 +450,13 @@ class WallpaperRepository(private val appContext: Context) {
         }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/')
     }
 
-    private fun pickAccentForId(id: String): String {
-        val palette = listOf("#22D3EE", "#FF7A59", "#34D399", "#FACC15", "#38BDF8", "#FB7185")
-        val index = (id.hashCode() and 0x7FFFFFFF) % palette.size
-        return palette[index]
-    }
-
     companion object {
         const val VIRTUAL_HOST = "wallpaper.local"
         const val PREFS_NAME = "livehtml_prefs"
         private const val WALLPAPERS_DIR = "wallpapers"
+        private const val GIF_FILE_NAME = "wallpaper.gif"
         private const val MAX_IMPORT_BYTES = 100L * 1024L * 1024L
+        private const val MAX_VIDEO_BYTES = 250L * 1024L * 1024L
         private const val MAX_ZIP_ENTRIES = 600
 
         private const val KEY_USER_WALLPAPERS = "user_wallpapers_json"
@@ -482,6 +467,7 @@ class WallpaperRepository(private val appContext: Context) {
         private const val KEY_TOUCH_ENABLED = "touch_enabled"
         private const val KEY_TARGET_FPS = "target_fps"
         private const val KEY_RENDER_MODE = "render_mode"
+        private const val KEY_DARK_THEME = "dark_theme"
         private const val KEY_REVISION = "content_revision"
     }
 }

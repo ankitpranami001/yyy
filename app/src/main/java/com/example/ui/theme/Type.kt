@@ -22,11 +22,6 @@ val PlusJakartaFontFamily = FontFamily(
     Font(R.font.plus_jakarta_sans, FontWeight.Bold)
 )
 
-val JetBrainsMonoFontFamily = FontFamily(
-    Font(R.font.jetbrains_mono, FontWeight.Normal),
-    Font(R.font.jetbrains_mono, FontWeight.Medium)
-)
-
 val AppTypography = Typography(
     displaySmall = TextStyle(
         fontFamily = SpaceGroteskFontFamily,
@@ -99,10 +94,10 @@ val AppTypography = Typography(
         letterSpacing = 0.2.sp
     ),
     labelSmall = TextStyle(
-        fontFamily = JetBrainsMonoFontFamily,
-        fontWeight = FontWeight.Medium,
+        fontFamily = PlusJakartaFontFamily,
+        fontWeight = FontWeight.SemiBold,
         fontSize = 11.sp,
         lineHeight = 14.sp,
-        letterSpacing = 0.3.sp
+        letterSpacing = 0.2.sp
     )
 )
