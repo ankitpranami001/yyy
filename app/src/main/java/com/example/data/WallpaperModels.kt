@@ -41,7 +41,7 @@ data class WallpaperSettings(
     val muteDuringOtherMedia: Boolean = true,
     val touchEnabled: Boolean = true,
     val targetFps: Int = 30,
-    val renderMode: RenderEngineMode = RenderEngineMode.AUTO_HARDWARE,
+    val renderMode: RenderEngineMode = RenderEngineMode.COMPATIBILITY_CANVAS,
     val darkTheme: Boolean = false
 ) {
     companion object {

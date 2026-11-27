@@ -40,6 +40,7 @@ import com.example.data.WallpaperRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 
 @Composable
 fun NativeVideoPreview(
@@ -101,7 +102,13 @@ fun NativeVideoPreview(
         runCatching {
             val mp = MediaPlayer().apply {
                 setSurface(surface)
-                setDataSource(videoFile.absolutePath)
+                val fdSet = runCatching {
+                    FileInputStream(videoFile).use { fis -> setDataSource(fis.fd) }
+                    true
+                }.getOrDefault(false)
+                if (!fdSet) {
+                    setDataSource(videoFile.absolutePath)
+                }
                 isLooping = true
                 setOnVideoSizeChangedListener { _, vw, vh ->
                     textureView.post { applyCenterCrop(textureView, vw, vh) }

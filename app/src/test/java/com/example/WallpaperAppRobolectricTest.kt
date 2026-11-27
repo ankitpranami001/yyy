@@ -24,6 +24,7 @@ import com.example.ui.theme.LiveHtmlTheme
 import com.example.wallpaper.AudioBridgeScript
 import com.example.wallpaper.GifWallpaperRenderer
 import com.example.wallpaper.LocalWallpaperWebClient
+import com.example.wallpaper.WallpaperPickerLauncher
 import com.example.wallpaper.WallpaperPlacementPolicy
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -282,6 +283,34 @@ class WallpaperAppRobolectricTest {
     }
 
     @Test
+    fun repository_detectsZipByMagicBytesAndHandlesWindowsPaths() = runBlocking {
+        // Default render engine must be Universal Canvas for all-device OEM compatibility
+        assertEquals(RenderEngineMode.COMPATIBILITY_CANVAS, repository.readSettings().renderMode)
+
+        // Extensionless filename (common on Xiaomi/Vivo/Oppo file managers) + Windows backslash entry
+        val noExtZip = createZipFile(
+            "10004521",
+            mapOf(
+                "pack\\index.html" to "<html><head></head><body>WinZip</body></html>".toByteArray()
+            )
+        )
+        val result = repository.importHtmlOrZip(Uri.fromFile(noExtZip))
+        assertTrue(result.isSuccess)
+        val item = result.getOrThrow()
+        assertEquals(WallpaperSource.UPLOADED_ZIP, item.source)
+        assertEquals("pack/index.html", item.entryFile)
+    }
+
+    @Test
+    fun pickerLauncher_buildsMultiOemFallbackChain() {
+        val candidates = WallpaperPickerLauncher.buildCandidateIntents(context)
+        assertTrue(candidates.size >= 4)
+        assertEquals(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER, candidates[0].second.action)
+        assertEquals(WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER, candidates[1].second.action)
+        assertEquals(android.content.Intent.ACTION_CHOOSER, candidates.last().second.action)
+    }
+
+    @Test
     fun repository_importVideoAndGifFiles() = runBlocking {
         val fakeVideo = createTempFile("ocean_loop.mp4", ByteArray(1024) { it.toByte() })
         val videoRes = repository.importVideo(Uri.fromFile(fakeVideo))
@@ -469,9 +498,9 @@ class WallpaperAppRobolectricTest {
         composeTestRule.mainClock.advanceTimeBy(200)
         assertFalse(state.settings.soundEnabled)
 
-        composeTestRule.onNodeWithTag("sheet_render_compat").assertExists().performClick()
+        composeTestRule.onNodeWithTag("sheet_render_hw").assertExists().performClick()
         composeTestRule.mainClock.advanceTimeBy(200)
-        assertEquals(RenderEngineMode.COMPATIBILITY_CANVAS, state.settings.renderMode)
+        assertEquals(RenderEngineMode.AUTO_HARDWARE, state.settings.renderMode)
     }
 
     // -------------------------------------------------------------------------

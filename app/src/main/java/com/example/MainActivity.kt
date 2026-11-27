@@ -1,8 +1,5 @@
 package com.example
 
-import android.app.WallpaperManager
-import android.content.ComponentName
-import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -24,12 +21,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.WallpaperTarget
 import com.example.ui.MainViewModel
 import com.example.ui.screens.HomeScreen
 import com.example.ui.theme.LiveHtmlTheme
-import com.example.wallpaper.HtmlLiveWallpaperService
+import com.example.wallpaper.WallpaperPickerLauncher
 
 class MainActivity : ComponentActivity() {
 
@@ -52,16 +50,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun launchSystemLiveWallpaperPicker() {
-        val component = ComponentName(this, HtmlLiveWallpaperService::class.java)
-        val directIntent = Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).apply {
-            putExtra(WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT, component)
-        }
-        try {
-            startActivity(directIntent)
-        } catch (_: Throwable) {
-            try {
-                startActivity(Intent(WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER))
-            } catch (_: Throwable) {
+        when (WallpaperPickerLauncher.launch(this)) {
+            WallpaperPickerLauncher.LaunchResult.OPENED_DIRECT,
+            WallpaperPickerLauncher.LaunchResult.OPENED_CHOOSER -> Unit
+            WallpaperPickerLauncher.LaunchResult.OPENED_GENERIC_WALLPAPER_SETTINGS -> {
+                viewModel.showMessage(getString(R.string.chooser_select_wallpaper))
+            }
+            WallpaperPickerLauncher.LaunchResult.NOT_SUPPORTED_BY_OS -> {
+                viewModel.showMessage(getString(R.string.msg_wallpaper_not_supported))
+            }
+            WallpaperPickerLauncher.LaunchResult.FAILED -> {
                 viewModel.showMessage(getString(R.string.msg_wallpaper_picker_error))
             }
         }
@@ -73,25 +71,100 @@ private fun LiveHtmlRoot(
     viewModel: MainViewModel,
     onLaunchWallpaperPicker: () -> Unit
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    val htmlPicker = rememberLauncherForActivityResult(
+    val htmlOpenDocPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) viewModel.importHtml(uri)
-    }
+    ) { uri -> if (uri != null) viewModel.importHtml(uri) }
 
-    val videoPicker = rememberLauncherForActivityResult(
+    val htmlGetContentFallback = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri -> if (uri != null) viewModel.importHtml(uri) }
+
+    val videoPhotoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        if (uri != null) viewModel.importVideo(uri)
+    ) { uri -> if (uri != null) viewModel.importVideo(uri) }
+
+    val videoOpenDocFallback = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) viewModel.importVideo(uri) }
+
+    val videoGetContentFallback = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri -> if (uri != null) viewModel.importVideo(uri) }
+
+    val gifOpenDocPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) viewModel.importGif(uri) }
+
+    val gifGetContentFallback = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri -> if (uri != null) viewModel.importGif(uri) }
+
+    fun launchHtmlPicker() {
+        val launched = runCatching {
+            htmlOpenDocPicker.launch(
+                arrayOf(
+                    "text/html",
+                    "application/zip",
+                    "application/x-zip-compressed",
+                    "application/octet-stream",
+                    "*/*"
+                )
+            )
+            true
+        }.getOrDefault(false)
+        if (!launched) {
+            val fallbackOk = runCatching {
+                htmlGetContentFallback.launch("*/*")
+                true
+            }.getOrDefault(false)
+            if (!fallbackOk) {
+                viewModel.showMessage(context.getString(R.string.msg_file_picker_error))
+            }
+        }
     }
 
-    val gifPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) viewModel.importGif(uri)
+    fun launchVideoPicker() {
+        val launched = runCatching {
+            videoPhotoPicker.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+            )
+            true
+        }.getOrDefault(false)
+        if (!launched) {
+            val openDocOk = runCatching {
+                videoOpenDocFallback.launch(arrayOf("video/*", "*/*"))
+                true
+            }.getOrDefault(false)
+            if (!openDocOk) {
+                val getContentOk = runCatching {
+                    videoGetContentFallback.launch("video/*")
+                    true
+                }.getOrDefault(false)
+                if (!getContentOk) {
+                    viewModel.showMessage(context.getString(R.string.msg_file_picker_error))
+                }
+            }
+        }
+    }
+
+    fun launchGifPicker() {
+        val launched = runCatching {
+            gifOpenDocPicker.launch(arrayOf("image/gif", "image/*", "*/*"))
+            true
+        }.getOrDefault(false)
+        if (!launched) {
+            val fallbackOk = runCatching {
+                gifGetContentFallback.launch("image/gif")
+                true
+            }.getOrDefault(false)
+            if (!fallbackOk) {
+                viewModel.showMessage(context.getString(R.string.msg_file_picker_error))
+            }
+        }
     }
 
     LaunchedEffect(uiState.statusMessage) {
@@ -112,25 +185,9 @@ private fun LiveHtmlRoot(
             HomeScreen(
                 uiState = uiState,
                 repository = viewModel.repository,
-                onUploadHtml = {
-                    htmlPicker.launch(
-                        arrayOf(
-                            "text/html",
-                            "application/zip",
-                            "application/x-zip-compressed",
-                            "application/octet-stream",
-                            "*/*"
-                        )
-                    )
-                },
-                onUploadVideo = {
-                    videoPicker.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
-                    )
-                },
-                onUploadGif = {
-                    gifPicker.launch(arrayOf("image/gif"))
-                },
+                onUploadHtml = ::launchHtmlPicker,
+                onUploadVideo = ::launchVideoPicker,
+                onUploadGif = ::launchGifPicker,
                 onOpenApplySheet = { viewModel.setApplySheetVisible(true) },
                 onDismissApplySheet = { viewModel.setApplySheetVisible(false) },
                 onApplyForTarget = { target: WallpaperTarget ->

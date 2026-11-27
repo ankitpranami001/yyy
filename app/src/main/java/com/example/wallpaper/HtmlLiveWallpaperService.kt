@@ -8,9 +8,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Matrix
-import android.graphics.SurfaceTexture
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.Shader
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.AudioAttributes
@@ -28,7 +30,6 @@ import android.view.Display
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceHolder
-import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
@@ -40,6 +41,7 @@ import androidx.core.content.ContextCompat
 import com.example.data.RenderEngineMode
 import com.example.data.WallpaperRepository
 import com.example.data.WallpaperSource
+import java.io.FileInputStream
 
 class HtmlLiveWallpaperService : WallpaperService() {
 
@@ -49,10 +51,10 @@ class HtmlLiveWallpaperService : WallpaperService() {
         NONE,
         DEDICATED_INACTIVE_MASK,
         VIDEO_DIRECT,
-        VIDEO_PRESENTATION,
         GIF_CANVAS,
         WEB_PRESENTATION,
-        WEB_CANVAS
+        WEB_CANVAS,
+        NATIVE_FALLBACK_CANVAS
     }
 
     inner class HtmlWallpaperEngine : Engine() {
@@ -66,8 +68,6 @@ class HtmlLiveWallpaperService : WallpaperService() {
         private var virtualDisplay: VirtualDisplay? = null
         private var presentation: MaskedPresentation? = null
         private var webView: WebView? = null
-        private var videoTextureView: TextureView? = null
-        private var videoTextureSurface: Surface? = null
         private var mediaPlayer: MediaPlayer? = null
         private var gifRenderer: GifWallpaperRenderer? = null
         private var isVideoPrepared: Boolean = false
@@ -84,6 +84,8 @@ class HtmlLiveWallpaperService : WallpaperService() {
         private var frameScheduled: Boolean = false
         private var lockReceiverRegistered: Boolean = false
         private var playbackCallback: Any? = null
+
+        private val fallbackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
         private val unlockResyncRunnable = Runnable {
             if (isEngineVisible) {
@@ -113,7 +115,6 @@ class HtmlLiveWallpaperService : WallpaperService() {
                     val modeChanged = desired != engineMode
 
                     if (modeChanged || (itemChanged && (desired == EngineMode.VIDEO_DIRECT ||
-                            desired == EngineMode.VIDEO_PRESENTATION ||
                             desired == EngineMode.GIF_CANVAS))
                     ) {
                         rebuildRenderer(holder, surfaceWidth, surfaceHeight)
@@ -296,17 +297,9 @@ class HtmlLiveWallpaperService : WallpaperService() {
             if (active.source == WallpaperSource.UPLOADED_VIDEO) {
                 val videoFile = repository.getMediaFile(active)
                 if (videoFile != null && videoFile.exists()) {
-                    val needsDynamicMask = WallpaperPlacementPolicy.needsDynamicScreenMasking(
-                        isPreview = isPreview,
-                        target = settings.wallpaperTarget,
-                        sdkInt = Build.VERSION.SDK_INT,
-                        wallpaperFlags = flags
-                    )
-                    return if (needsDynamicMask) {
-                        EngineMode.VIDEO_PRESENTATION
-                    } else {
-                        EngineMode.VIDEO_DIRECT
-                    }
+                    // Always use direct MediaPlayer on Surface for universal OEM compatibility
+                    // (MIUI/HyperOS, ColorOS, FuntouchOS, One UI, MediaTek, Snapdragon, Exynos)
+                    return EngineMode.VIDEO_DIRECT
                 }
             }
 
@@ -317,9 +310,9 @@ class HtmlLiveWallpaperService : WallpaperService() {
                 }
             }
 
-            val forceCanvas = settings.renderMode == RenderEngineMode.COMPATIBILITY_CANVAS ||
-                rendererCrashCount > 0
-            return if (forceCanvas) EngineMode.WEB_CANVAS else EngineMode.WEB_PRESENTATION
+            val useHardware = settings.renderMode == RenderEngineMode.AUTO_HARDWARE &&
+                rendererCrashCount == 0
+            return if (useHardware) EngineMode.WEB_PRESENTATION else EngineMode.WEB_CANVAS
         }
 
         private fun rebuildRenderer(holder: SurfaceHolder, width: Int, height: Int) {
@@ -339,23 +332,6 @@ class HtmlLiveWallpaperService : WallpaperService() {
                     clearCanvasSurfaceToBlack()
                 }
 
-                EngineMode.VIDEO_PRESENTATION -> {
-                    val videoFile = repository.getMediaFile(active)
-                    if (videoFile != null && videoFile.exists()) {
-                        val started = startVideoPresentation(surface, width, height, videoFile.absolutePath)
-                        if (started) {
-                            engineMode = EngineMode.VIDEO_PRESENTATION
-                            syncActivePlaybackAndVisibility()
-                            return
-                        }
-                        // Fallback to direct MediaPlayer (never mixing lockCanvas on this Surface)
-                        engineMode = EngineMode.VIDEO_DIRECT
-                        startDirectVideoEngine(holder, videoFile.absolutePath)
-                        return
-                    }
-                    startWebFallback(surface, width, height, forceCanvas = false)
-                }
-
                 EngineMode.VIDEO_DIRECT -> {
                     val videoFile = repository.getMediaFile(active)
                     if (videoFile != null && videoFile.exists()) {
@@ -363,7 +339,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
                         startDirectVideoEngine(holder, videoFile.absolutePath)
                         return
                     }
-                    startWebFallback(surface, width, height, forceCanvas = false)
+                    startWebEngine(surface, width, height, preferHardware = false)
                 }
 
                 EngineMode.GIF_CANVAS -> {
@@ -376,35 +352,39 @@ class HtmlLiveWallpaperService : WallpaperService() {
                         return
                     }
                     renderer.release()
-                    startWebFallback(surface, width, height, forceCanvas = true)
+                    startWebEngine(surface, width, height, preferHardware = false)
                 }
 
                 EngineMode.WEB_PRESENTATION -> {
-                    startWebFallback(surface, width, height, forceCanvas = false)
+                    startWebEngine(surface, width, height, preferHardware = true)
                 }
 
-                EngineMode.WEB_CANVAS, EngineMode.NONE -> {
-                    startWebFallback(surface, width, height, forceCanvas = true)
+                EngineMode.WEB_CANVAS, EngineMode.NATIVE_FALLBACK_CANVAS, EngineMode.NONE -> {
+                    startWebEngine(surface, width, height, preferHardware = false)
                 }
             }
         }
 
-        private fun startWebFallback(
+        private fun startWebEngine(
             surface: Surface,
             width: Int,
             height: Int,
-            forceCanvas: Boolean
+            preferHardware: Boolean
         ) {
-            if (!forceCanvas && startWebPresentation(surface, width, height)) {
+            if (preferHardware && startWebPresentation(surface, width, height)) {
                 engineMode = EngineMode.WEB_PRESENTATION
                 loadActiveWebWallpaper()
                 syncActivePlaybackAndVisibility()
                 return
             }
-            engineMode = EngineMode.WEB_CANVAS
-            startCanvasFallbackWebView(width, height)
-            loadActiveWebWallpaper()
-            syncActivePlaybackAndVisibility()
+            if (startCanvasFallbackWebView(width, height)) {
+                engineMode = EngineMode.WEB_CANVAS
+                loadActiveWebWallpaper()
+                syncActivePlaybackAndVisibility()
+            } else {
+                engineMode = EngineMode.NATIVE_FALLBACK_CANVAS
+                drawNativeFallbackCanvas()
+            }
         }
 
         private fun syncActivePlaybackAndVisibility() {
@@ -422,20 +402,6 @@ class HtmlLiveWallpaperService : WallpaperService() {
                         applyVideoVolume(mp)
                         runCatching { if (!mp.isPlaying) mp.start() }
                     } else {
-                        runCatching {
-                            mp.setVolume(0f, 0f)
-                            if (isVideoPrepared && mp.isPlaying) mp.pause()
-                        }
-                    }
-                }
-
-                EngineMode.VIDEO_PRESENTATION -> {
-                    presentation?.setMasked(!allowedNow)
-                    val mp = mediaPlayer
-                    if (activeNow && mp != null && isVideoPrepared) {
-                        applyVideoVolume(mp)
-                        runCatching { if (!mp.isPlaying) mp.start() }
-                    } else if (mp != null) {
                         runCatching {
                             mp.setVolume(0f, 0f)
                             if (isVideoPrepared && mp.isPlaying) mp.pause()
@@ -471,7 +437,6 @@ class HtmlLiveWallpaperService : WallpaperService() {
                     } else {
                         applyAudioAndVisibilityState()
                         // NEVER call webView.pauseTimers() (it freezes WebViews process-wide)
-                        // and NEVER set webView.visibility = INVISIBLE (causes GPU compositor black frames)
                         runCatching { webView?.onPause() }
                     }
                 }
@@ -495,6 +460,14 @@ class HtmlLiveWallpaperService : WallpaperService() {
                     }
                 }
 
+                EngineMode.NATIVE_FALLBACK_CANVAS -> {
+                    if (activeNow) {
+                        drawNativeFallbackCanvas()
+                    } else if (isEngineVisible && !allowedNow) {
+                        clearCanvasSurfaceToBlack()
+                    }
+                }
+
                 EngineMode.NONE -> Unit
             }
         }
@@ -504,11 +477,23 @@ class HtmlLiveWallpaperService : WallpaperService() {
             runCatching {
                 val mp = MediaPlayer().apply {
                     setSurface(holder.surface)
-                    setDataSource(path)
+                    // Prefer FileDescriptor dataSource for strict OEM SELinux compatibility
+                    val fdSet = runCatching {
+                        FileInputStream(path).use { fis -> setDataSource(fis.fd) }
+                        true
+                    }.getOrDefault(false)
+                    if (!fdSet) {
+                        setDataSource(path)
+                    }
                     isLooping = true
-                    setVideoScalingMode(MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING)
-                    setOnPreparedListener {
+                    runCatching {
+                        setVideoScalingMode(MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING)
+                    }
+                    setOnPreparedListener { player ->
                         isVideoPrepared = true
+                        runCatching {
+                            player.setVideoScalingMode(MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING)
+                        }
                         syncActivePlaybackAndVisibility()
                     }
                     setOnCompletionListener { player ->
@@ -529,113 +514,6 @@ class HtmlLiveWallpaperService : WallpaperService() {
             }.onFailure {
                 Log.w(TAG, "Failed to start direct video wallpaper player", it)
             }
-        }
-
-        private fun startVideoPresentation(
-            surface: Surface,
-            width: Int,
-            height: Int,
-            videoPath: String
-        ): Boolean {
-            return try {
-                val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
-                val densityDpi = resources.displayMetrics.densityDpi
-                val vd = displayManager.createVirtualDisplay(
-                    "AnkitVideoWallpaperDisplay",
-                    width,
-                    height,
-                    densityDpi,
-                    surface,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY
-                ) ?: return false
-
-                val displayContext = createDisplayContext(vd.display)
-                val textureView = TextureView(displayContext).apply {
-                    layoutParams = FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                    surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                        override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                            prepareTextureVideoPlayer(this@apply, st, videoPath)
-                        }
-
-                        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
-                            val mp = mediaPlayer
-                            if (mp != null && isVideoPrepared) {
-                                applyCenterCrop(this@apply, mp.videoWidth, mp.videoHeight)
-                            }
-                        }
-
-                        override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-                            releaseMediaPlayerOnly()
-                            return true
-                        }
-
-                        override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit
-                    }
-                }
-                val pres = MaskedPresentation(displayContext, vd.display, textureView)
-                pres.show()
-
-                virtualDisplay = vd
-                presentation = pres
-                videoTextureView = textureView
-                true
-            } catch (t: Throwable) {
-                Log.w(TAG, "Video presentation unavailable, using direct MediaPlayer", t)
-                tearDownRenderer()
-                false
-            }
-        }
-
-        private fun prepareTextureVideoPlayer(
-            textureView: TextureView,
-            st: SurfaceTexture,
-            videoPath: String
-        ) {
-            releaseMediaPlayerOnly()
-            val surface = Surface(st)
-            videoTextureSurface = surface
-            runCatching {
-                val mp = MediaPlayer().apply {
-                    setSurface(surface)
-                    setDataSource(videoPath)
-                    isLooping = true
-                    setOnVideoSizeChangedListener { _, vw, vh ->
-                        textureView.post { applyCenterCrop(textureView, vw, vh) }
-                    }
-                    setOnPreparedListener { player ->
-                        isVideoPrepared = true
-                        textureView.post { applyCenterCrop(textureView, player.videoWidth, player.videoHeight) }
-                        syncActivePlaybackAndVisibility()
-                    }
-                    setOnCompletionListener { player ->
-                        if (isEngineVisible && shouldRenderLiveContentNow()) {
-                            runCatching {
-                                player.seekTo(0)
-                                player.start()
-                            }
-                        }
-                    }
-                    setOnErrorListener { _, _, _ -> true }
-                    prepareAsync()
-                }
-                mediaPlayer = mp
-            }
-        }
-
-        private fun applyCenterCrop(textureView: TextureView, videoW: Int, videoH: Int) {
-            val viewW = textureView.width.toFloat()
-            val viewH = textureView.height.toFloat()
-            if (viewW <= 0f || viewH <= 0f || videoW <= 0 || videoH <= 0) return
-            val scaleX = videoW.toFloat() / viewW
-            val scaleY = videoH.toFloat() / viewH
-            val maxScale = maxOf(1f / scaleX, 1f / scaleY)
-            val matrix = Matrix().apply {
-                setScale(scaleX * maxScale, scaleY * maxScale, viewW / 2f, viewH / 2f)
-            }
-            textureView.setTransform(matrix)
         }
 
         private fun startWebPresentation(surface: Surface, width: Int, height: Int): Boolean {
@@ -661,19 +539,26 @@ class HtmlLiveWallpaperService : WallpaperService() {
                 webView = wv
                 true
             } catch (t: Throwable) {
-                Log.w(TAG, "Hardware presentation unavailable, falling back to Canvas mode", t)
+                Log.w(TAG, "Hardware presentation unavailable, falling back to Universal Canvas", t)
                 tearDownRenderer()
                 false
             }
         }
 
-        private fun startCanvasFallbackWebView(width: Int, height: Int) {
-            val wv = createConfiguredWebView(applicationContext, hardwareAccelerated = false)
-            val widthSpec = View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY)
-            val heightSpec = View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY)
-            wv.measure(widthSpec, heightSpec)
-            wv.layout(0, 0, width, height)
-            webView = wv
+        private fun startCanvasFallbackWebView(width: Int, height: Int): Boolean {
+            return try {
+                val wv = createConfiguredWebView(applicationContext, hardwareAccelerated = false)
+                val widthSpec = View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY)
+                val heightSpec = View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY)
+                wv.measure(widthSpec, heightSpec)
+                wv.layout(0, 0, width, height)
+                webView = wv
+                true
+            } catch (t: Throwable) {
+                Log.w(TAG, "System WebView unavailable on this device right now", t)
+                webView = null
+                false
+            }
         }
 
         @SuppressLint("SetJavaScriptEnabled")
@@ -734,7 +619,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
                 if (rendererCrashCount <= MAX_SERVICE_RENDERER_RETRIES &&
                     surfaceWidth > 0 && surfaceHeight > 0
                 ) {
-                    Log.w(TAG, "Recovering wallpaper WebView in compatibility mode (attempt $rendererCrashCount)")
+                    Log.w(TAG, "Recovering wallpaper WebView in universal canvas mode (attempt $rendererCrashCount)")
                     mainHandler.postDelayed({
                         val holder = surfaceHolder
                         if (holder != null && holder.surface != null && holder.surface.isValid) {
@@ -767,7 +652,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
         }
 
         private fun applyAudioAndVisibilityState(target: WebView? = webView) {
-            if (engineMode == EngineMode.VIDEO_DIRECT || engineMode == EngineMode.VIDEO_PRESENTATION) {
+            if (engineMode == EngineMode.VIDEO_DIRECT) {
                 applyVideoVolume(mediaPlayer)
                 return
             }
@@ -786,13 +671,35 @@ class HtmlLiveWallpaperService : WallpaperService() {
         }
 
         private fun clearCanvasSurfaceToBlack() {
-            // Only ever called for CPU-canvas surfaces (GIF_CANVAS, WEB_CANVAS, DEDICATED_INACTIVE_MASK)
             val holder = surfaceHolder ?: return
             if (!holder.surface.isValid) return
-            var canvas: android.graphics.Canvas? = null
+            var canvas: Canvas? = null
             try {
                 canvas = holder.lockCanvas()
                 canvas?.drawColor(Color.BLACK)
+            } catch (_: Throwable) {
+            } finally {
+                if (canvas != null) runCatching { holder.unlockCanvasAndPost(canvas) }
+            }
+        }
+
+        private fun drawNativeFallbackCanvas() {
+            val holder = surfaceHolder ?: return
+            if (!holder.surface.isValid) return
+            var canvas: Canvas? = null
+            try {
+                canvas = holder.lockCanvas()
+                if (canvas != null) {
+                    val w = canvas.width.toFloat()
+                    val h = canvas.height.toFloat()
+                    fallbackPaint.shader = LinearGradient(
+                        0f, 0f, w, h,
+                        intArrayOf(0xFF040712.toInt(), 0xFF0E2A47.toInt(), 0xFF083344.toInt()),
+                        floatArrayOf(0f, 0.55f, 1f),
+                        Shader.TileMode.CLAMP
+                    )
+                    canvas.drawRect(0f, 0f, w, h, fallbackPaint)
+                }
             } catch (_: Throwable) {
             } finally {
                 if (canvas != null) runCatching { holder.unlockCanvasAndPost(canvas) }
@@ -803,7 +710,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
             val renderer = gifRenderer ?: return
             val holder = surfaceHolder ?: return
             if (!holder.surface.isValid || surfaceWidth <= 0 || surfaceHeight <= 0) return
-            var canvas: android.graphics.Canvas? = null
+            var canvas: Canvas? = null
             try {
                 canvas = holder.lockCanvas()
                 if (canvas != null) {
@@ -819,7 +726,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
             val wv = webView ?: return
             val holder = surfaceHolder ?: return
             if (!holder.surface.isValid) return
-            var canvas: android.graphics.Canvas? = null
+            var canvas: Canvas? = null
             try {
                 wv.invalidate()
                 canvas = holder.lockCanvas()
@@ -858,14 +765,11 @@ class HtmlLiveWallpaperService : WallpaperService() {
                 }
             }
             mediaPlayer = null
-            runCatching { videoTextureSurface?.release() }
-            videoTextureSurface = null
         }
 
         private fun tearDownRenderer() {
             stopCanvasLoop()
             releaseMediaPlayerOnly()
-            videoTextureView = null
             runCatching { gifRenderer?.release() }
             gifRenderer = null
             runCatching {
@@ -959,11 +863,6 @@ class HtmlLiveWallpaperService : WallpaperService() {
         }
     }
 
-    /**
-     * Presentation hosting the wallpaper content with a sibling black mask View so we can mask
-     * inactive screens (Home-Only / Lock-Only) WITHOUT ever toggling WebView.visibility = INVISIBLE
-     * or calling lockCanvas() on a hardware EGL/MediaCodec surface.
-     */
     private class MaskedPresentation(
         outerContext: Context,
         display: Display,

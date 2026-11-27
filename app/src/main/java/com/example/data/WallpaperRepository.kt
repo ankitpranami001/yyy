@@ -93,9 +93,9 @@ class WallpaperRepository(private val appContext: Context) {
     fun getUserWallpaperDir(id: String): File = File(wallpapersRootDir, id)
 
     fun readSettings(): WallpaperSettings {
-        val modeName = prefs.getString(KEY_RENDER_MODE, RenderEngineMode.AUTO_HARDWARE.name)
+        val modeName = prefs.getString(KEY_RENDER_MODE, RenderEngineMode.COMPATIBILITY_CANVAS.name)
         val renderMode = runCatching { RenderEngineMode.valueOf(modeName ?: "") }
-            .getOrDefault(RenderEngineMode.AUTO_HARDWARE)
+            .getOrDefault(RenderEngineMode.COMPATIBILITY_CANVAS)
         val targetName = prefs.getString(KEY_WALLPAPER_TARGET, WallpaperTarget.BOTH.name)
         val wallpaperTarget = runCatching { WallpaperTarget.valueOf(targetName ?: "") }
             .getOrDefault(WallpaperTarget.BOTH)
@@ -143,13 +143,33 @@ class WallpaperRepository(private val appContext: Context) {
             val id = "html_${UUID.randomUUID().toString().replace("-", "").take(10)}"
             val targetDir = File(wallpapersRootDir, id).apply { mkdirs() }
 
-            val item = if (lowerName.endsWith(".zip")) {
+            val item = if (isZipUri(uri, lowerName)) {
                 extractZipBundle(uri, rawName, id, targetDir)
             } else {
                 importSingleHtml(uri, rawName, id, targetDir)
             }
             registerImportedItem(item)
         }
+    }
+
+    private fun isZipUri(uri: Uri, lowerName: String): Boolean {
+        if (lowerName.endsWith(".zip")) return true
+        val mime = runCatching { appContext.contentResolver.getType(uri) }.getOrNull()?.lowercase()
+        if (mime == "application/zip" || mime == "application/x-zip-compressed" || mime == "multipart/x-zip") {
+            return true
+        }
+        // Inspect first 4 magic bytes (PK\x03\x04 or empty archive PK\x05\x06) for OEM pickers that strip extensions
+        return runCatching {
+            appContext.contentResolver.openInputStream(uri)?.use { input ->
+                val header = ByteArray(4)
+                val read = input.read(header)
+                read >= 4 &&
+                    header[0] == 0x50.toByte() &&
+                    header[1] == 0x4B.toByte() &&
+                    ((header[2] == 0x03.toByte() && header[3] == 0x04.toByte()) ||
+                        (header[2] == 0x05.toByte() && header[3] == 0x06.toByte()))
+            } ?: false
+        }.getOrDefault(false)
     }
 
     suspend fun importVideo(uri: Uri): Result<WallpaperItem> = withContext(Dispatchers.IO) {
@@ -307,7 +327,7 @@ class WallpaperRepository(private val appContext: Context) {
                 val buffer = ByteArray(16 * 1024)
                 while (true) {
                     val entry = zis.nextEntry ?: break
-                    val entryName = entry.name
+                    val entryName = entry.name.replace('\\', '/')
                     if (entryName.startsWith("__MACOSX/") || entryName.contains("/._")) {
                         zis.closeEntry()
                         continue

@@ -242,75 +242,81 @@ private fun ManagedLiveWebView(
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
-                WebView(ctx).apply {
-                    layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                    setBackgroundColor(Color.BLACK)
-                    isVerticalScrollBarEnabled = false
-                    isHorizontalScrollBarEnabled = false
-                    overScrollMode = View.OVER_SCROLL_NEVER
+                try {
+                    WebView(ctx).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                        setBackgroundColor(Color.BLACK)
+                        isVerticalScrollBarEnabled = false
+                        isHorizontalScrollBarEnabled = false
+                        overScrollMode = View.OVER_SCROLL_NEVER
 
-                    setLayerType(
-                        if (useSoftwareLayer) View.LAYER_TYPE_SOFTWARE else View.LAYER_TYPE_HARDWARE,
-                        null
-                    )
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
-                    }
+                        setLayerType(
+                            if (useSoftwareLayer) View.LAYER_TYPE_SOFTWARE else View.LAYER_TYPE_HARDWARE,
+                            null
+                        )
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
+                        }
 
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    settings.mediaPlaybackRequiresUserGesture = false
-                    settings.allowFileAccess = false
-                    settings.allowContentAccess = false
-                    settings.setSupportMultipleWindows(false)
-                    settings.javaScriptCanOpenWindowsAutomatically = false
-                    settings.useWideViewPort = true
-                    settings.loadWithOverviewMode = true
-                    settings.cacheMode = WebSettings.LOAD_NO_CACHE
-                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.mediaPlaybackRequiresUserGesture = false
+                        settings.allowFileAccess = false
+                        settings.allowContentAccess = false
+                        settings.setSupportMultipleWindows(false)
+                        settings.javaScriptCanOpenWindowsAutomatically = false
+                        settings.useWideViewPort = true
+                        settings.loadWithOverviewMode = true
+                        settings.cacheMode = WebSettings.LOAD_NO_CACHE
+                        settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
 
-                    setOnTouchListener { v, event ->
-                        if (!latestTouch) {
-                            true
-                        } else {
-                            if (event.action == MotionEvent.ACTION_DOWN) {
-                                v.parent?.requestDisallowInterceptTouchEvent(true)
-                            } else if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
-                                v.parent?.requestDisallowInterceptTouchEvent(false)
+                        setOnTouchListener { v, event ->
+                            if (!latestTouch) {
+                                true
+                            } else {
+                                if (event.action == MotionEvent.ACTION_DOWN) {
+                                    v.parent?.requestDisallowInterceptTouchEvent(true)
+                                } else if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
+                                    v.parent?.requestDisallowInterceptTouchEvent(false)
+                                }
+                                false
                             }
-                            false
                         }
+
+                        webChromeClient = WebChromeClient()
+                        webViewClient = LocalWallpaperWebClient(
+                            context = context.applicationContext,
+                            repository = repository,
+                            inlinePreviewProvider = { latestInlineHtml },
+                            onPageReady = { loaded ->
+                                pageLoaded = true
+                                pushAudioState(loaded, isResumed)
+                                loaded.invalidate()
+                            },
+                            onRendererCrash = { crashedView, _ ->
+                                safelyDestroyWebView(crashedView ?: webViewRef)
+                                latestOnCrash()
+                            }
+                        )
+
+                        onResume()
+                        resumeTimers()
+                        lastLoadedSignature = currentSignature
+                        pageLoaded = false
+                        loadUrl(url)
+                        webViewRef = this
                     }
-
-                    webChromeClient = WebChromeClient()
-                    webViewClient = LocalWallpaperWebClient(
-                        context = context.applicationContext,
-                        repository = repository,
-                        inlinePreviewProvider = { latestInlineHtml },
-                        onPageReady = { loaded ->
-                            pageLoaded = true
-                            pushAudioState(loaded, isResumed)
-                            loaded.invalidate()
-                        },
-                        onRendererCrash = { crashedView, _ ->
-                            safelyDestroyWebView(crashedView ?: webViewRef)
-                            latestOnCrash()
-                        }
-                    )
-
-                    onResume()
-                    resumeTimers()
-                    lastLoadedSignature = currentSignature
-                    pageLoaded = false
-                    loadUrl(url)
-                    webViewRef = this
+                } catch (_: Throwable) {
+                    pageLoaded = true
+                    latestOnCrash()
+                    View(ctx).apply { setBackgroundColor(Color.BLACK) }
                 }
             },
             update = { view ->
-                if (webViewRef == null && !isDestroyed) {
+                if (view is WebView && webViewRef == null && !isDestroyed) {
                     webViewRef = view
                 }
             }

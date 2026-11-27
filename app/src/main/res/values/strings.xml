@@ -35,8 +35,11 @@
     <string name="controls_touch_enabled">Touch Interaction</string>
     <string name="controls_touch_desc">Forward screen taps to HTML wallpaper</string>
     <string name="controls_render_mode">HTML Render Engine</string>
-    <string name="controls_render_hardware">Hardware Accelerated</string>
-    <string name="controls_render_compat">Compatibility Canvas</string>
+    <string name="controls_render_hardware">Hardware Presentation (High-End)</string>
+    <string name="controls_render_compat">Universal Canvas (All Phones - Recommended)</string>
 
-    <string name="msg_wallpaper_picker_error">Unable to open system live wallpaper picker on this device.</string>
+    <string name="msg_wallpaper_picker_error">Open your phone Settings &gt; Wallpaper &gt; Live Wallpapers and select Ankit.</string>
+    <string name="msg_wallpaper_not_supported">This phone has live wallpapers restricted by the system. Open Wallpaper settings to check support.</string>
+    <string name="msg_file_picker_error">No file manager found to pick this file. Please install or enable Files app.</string>
+    <string name="chooser_select_wallpaper">Select Ankit Live Wallpaper</string>
 </resources>
