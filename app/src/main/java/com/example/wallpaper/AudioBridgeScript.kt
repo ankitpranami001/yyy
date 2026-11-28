@@ -109,20 +109,59 @@ object AudioBridgeScript {
         return "if(window.__liveHtmlApplyState){window.__liveHtmlApplyState($soundEnabled,$safeVol,$visible);}"
     }
 
-    fun injectIntoHtml(html: String): String {
+    fun buildViewModeJs(mode: String): String {
+        val safeMode = if (mode == "home") "home" else "lock"
+        return "window.__ankitViewMode='$safeMode';try{window.dispatchEvent(new CustomEvent('ankit:viewmode',{detail:{mode:'$safeMode'}}));}catch(_){}"
+    }
+
+    fun injectIntoHtml(html: String): String = injectSnippet(html, HEAD_INJECTION)
+
+    fun injectThemeIntoHtml(html: String, forceTransparentRoot: Boolean): String {
+        val transparentCss = if (forceTransparentRoot) {
+            """
+<style id="__ankit_theme_overlay_css">
+html, body {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+}
+</style>
+            """.trimIndent()
+        } else {
+            ""
+        }
+        val themeMeta = """
+<script>
+window.__ankitThemeOverlay = true;
+window.__ankitViewMode = window.__ankitViewMode || 'lock';
+</script>
+        """.trimIndent()
+        val combined = buildString {
+            append(HEAD_INJECTION)
+            append("\n")
+            append(themeMeta)
+            if (transparentCss.isNotEmpty()) {
+                append("\n")
+                append(transparentCss)
+            }
+        }
+        return injectSnippet(html, combined)
+    }
+
+    private fun injectSnippet(html: String, snippet: String): String {
         val headIdx = html.indexOf("<head>", ignoreCase = true)
         if (headIdx >= 0) {
             val insertPos = headIdx + "<head>".length
-            return html.substring(0, insertPos) + "\n" + HEAD_INJECTION + "\n" + html.substring(insertPos)
+            return html.substring(0, insertPos) + "\n" + snippet + "\n" + html.substring(insertPos)
         }
         val htmlTagIdx = html.indexOf("<html", ignoreCase = true)
         if (htmlTagIdx >= 0) {
             val closeBracket = html.indexOf('>', htmlTagIdx)
             if (closeBracket >= 0) {
                 val insertPos = closeBracket + 1
-                return html.substring(0, insertPos) + "\n" + HEAD_INJECTION + "\n" + html.substring(insertPos)
+                return html.substring(0, insertPos) + "\n" + snippet + "\n" + html.substring(insertPos)
             }
         }
-        return HEAD_INJECTION + "\n" + html
+        return snippet + "\n" + html
     }
 }

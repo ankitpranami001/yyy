@@ -25,8 +25,14 @@ class WallpaperRepository(private val appContext: Context) {
     private val wallpapersRootDir: File =
         File(appContext.filesDir, WALLPAPERS_DIR).apply { mkdirs() }
 
+    private val themesRootDir: File =
+        File(appContext.filesDir, THEMES_DIR).apply { mkdirs() }
+
     private val _wallpapers = MutableStateFlow<List<WallpaperItem>>(emptyList())
     val wallpapers: StateFlow<List<WallpaperItem>> = _wallpapers.asStateFlow()
+
+    private val _themes = MutableStateFlow<List<HtmlThemeItem>>(emptyList())
+    val themes: StateFlow<List<HtmlThemeItem>> = _themes.asStateFlow()
 
     private val _settings = MutableStateFlow(readSettings())
     val settings: StateFlow<WallpaperSettings> = _settings.asStateFlow()
@@ -34,10 +40,12 @@ class WallpaperRepository(private val appContext: Context) {
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
         _settings.value = readSettings()
         _wallpapers.value = loadAllWallpapers()
+        _themes.value = readUserThemes()
     }
 
     init {
         _wallpapers.value = loadAllWallpapers()
+        _themes.value = readUserThemes()
         prefs.registerOnSharedPreferenceChangeListener(prefListener)
     }
 
@@ -92,6 +100,54 @@ class WallpaperRepository(private val appContext: Context) {
 
     fun getUserWallpaperDir(id: String): File = File(wallpapersRootDir, id)
 
+    fun getUserThemeDir(id: String): File = File(themesRootDir, id)
+
+    fun getSelectedThemeRaw(): HtmlThemeItem? {
+        val activeThemeId = readSettings().activeThemeId ?: return null
+        return readUserThemes().firstOrNull { it.id == activeThemeId }
+    }
+
+    fun getLockScreenWallpaperRaw(): WallpaperItem? {
+        val lockId = readSettings().lockScreenWallpaperId ?: return null
+        return loadAllWallpapers().firstOrNull { it.id == lockId }
+    }
+
+    fun getLockScreenThemeRaw(): HtmlThemeItem? {
+        val lockThemeId = readSettings().lockScreenThemeId ?: return null
+        return readUserThemes().firstOrNull { it.id == lockThemeId }
+    }
+
+    fun getEffectiveWallpaper(forLockScreen: Boolean): WallpaperItem {
+        if (forLockScreen) {
+            val customLock = getLockScreenWallpaperRaw()
+            if (customLock != null) return customLock
+        }
+        return getActiveWallpaper()
+    }
+
+    fun getEffectiveTheme(forLockScreen: Boolean): HtmlThemeItem? {
+        val current = readSettings()
+        if (!current.themeEnabled) return null
+        if (forLockScreen) {
+            val customLockTheme = getLockScreenThemeRaw()
+            if (customLockTheme != null) return customLockTheme
+        }
+        val activeThemeId = current.activeThemeId ?: return null
+        return readUserThemes().firstOrNull { it.id == activeThemeId }
+    }
+
+    fun getActiveTheme(): HtmlThemeItem? {
+        val current = readSettings()
+        if (!current.themeEnabled) return null
+        val activeThemeId = current.activeThemeId ?: return null
+        return readUserThemes().firstOrNull { it.id == activeThemeId }
+    }
+
+    fun resolveThemeUrl(theme: HtmlThemeItem): String {
+        val cleanEntry = theme.entryFile.trimStart('/')
+        return "https://$VIRTUAL_HOST/theme/${theme.id}/$cleanEntry"
+    }
+
     fun readSettings(): WallpaperSettings {
         val modeName = prefs.getString(KEY_RENDER_MODE, RenderEngineMode.COMPATIBILITY_CANVAS.name)
         val renderMode = runCatching { RenderEngineMode.valueOf(modeName ?: "") }
@@ -104,6 +160,11 @@ class WallpaperRepository(private val appContext: Context) {
                 KEY_ACTIVE_ID,
                 WallpaperSettings.BUILTIN_AURORA_ID
             ) ?: WallpaperSettings.BUILTIN_AURORA_ID,
+            activeThemeId = prefs.getString(KEY_ACTIVE_THEME_ID, null),
+            lockScreenWallpaperId = prefs.getString(KEY_LOCK_WALLPAPER_ID, null),
+            lockScreenThemeId = prefs.getString(KEY_LOCK_THEME_ID, null),
+            themeEnabled = prefs.getBoolean(KEY_THEME_ENABLED, true),
+            themeTransparentBackground = prefs.getBoolean(KEY_THEME_TRANSPARENT, true),
             wallpaperTarget = wallpaperTarget,
             soundEnabled = prefs.getBoolean(KEY_SOUND_ENABLED, true),
             volume = prefs.getFloat(KEY_VOLUME, 0.75f).coerceIn(0f, 1f),
@@ -119,6 +180,11 @@ class WallpaperRepository(private val appContext: Context) {
         val updated = transform(readSettings())
         prefs.edit()
             .putString(KEY_ACTIVE_ID, updated.activeWallpaperId)
+            .putString(KEY_ACTIVE_THEME_ID, updated.activeThemeId)
+            .putString(KEY_LOCK_WALLPAPER_ID, updated.lockScreenWallpaperId)
+            .putString(KEY_LOCK_THEME_ID, updated.lockScreenThemeId)
+            .putBoolean(KEY_THEME_ENABLED, updated.themeEnabled)
+            .putBoolean(KEY_THEME_TRANSPARENT, updated.themeTransparentBackground)
             .putString(KEY_WALLPAPER_TARGET, updated.wallpaperTarget.name)
             .putBoolean(KEY_SOUND_ENABLED, updated.soundEnabled)
             .putFloat(KEY_VOLUME, updated.volume.coerceIn(0f, 1f))
@@ -136,7 +202,15 @@ class WallpaperRepository(private val appContext: Context) {
         updateSettings { it.copy(activeWallpaperId = id) }
     }
 
-    suspend fun importHtmlOrZip(uri: Uri): Result<WallpaperItem> = withContext(Dispatchers.IO) {
+    fun clearActiveTheme() {
+        updateSettings { it.copy(activeThemeId = null) }
+    }
+
+    fun clearLockScreenCustomization() {
+        updateSettings { it.copy(lockScreenWallpaperId = null, lockScreenThemeId = null) }
+    }
+
+    suspend fun importHtmlOrZip(uri: Uri, forLockScreen: Boolean = false): Result<WallpaperItem> = withContext(Dispatchers.IO) {
         runCatching {
             val rawName = queryDisplayName(uri) ?: "wallpaper_${System.currentTimeMillis()}.html"
             val lowerName = rawName.lowercase()
@@ -148,7 +222,7 @@ class WallpaperRepository(private val appContext: Context) {
             } else {
                 importSingleHtml(uri, rawName, id, targetDir)
             }
-            registerImportedItem(item)
+            registerImportedItem(item, forLockScreen = forLockScreen)
         }
     }
 
@@ -172,7 +246,7 @@ class WallpaperRepository(private val appContext: Context) {
         }.getOrDefault(false)
     }
 
-    suspend fun importVideo(uri: Uri): Result<WallpaperItem> = withContext(Dispatchers.IO) {
+    suspend fun importVideo(uri: Uri, forLockScreen: Boolean = false): Result<WallpaperItem> = withContext(Dispatchers.IO) {
         runCatching {
             val rawName = queryDisplayName(uri) ?: "video_${System.currentTimeMillis()}.mp4"
             val ext = rawName.substringAfterLast('.', "mp4")
@@ -197,11 +271,11 @@ class WallpaperRepository(private val appContext: Context) {
                 accentHex = "#8B5CF6",
                 description = rawName
             )
-            registerImportedItem(item)
+            registerImportedItem(item, forLockScreen = forLockScreen)
         }
     }
 
-    suspend fun importGif(uri: Uri): Result<WallpaperItem> = withContext(Dispatchers.IO) {
+    suspend fun importGif(uri: Uri, forLockScreen: Boolean = false): Result<WallpaperItem> = withContext(Dispatchers.IO) {
         runCatching {
             val rawName = queryDisplayName(uri) ?: "animation_${System.currentTimeMillis()}.gif"
             val id = "gif_${UUID.randomUUID().toString().replace("-", "").take(10)}"
@@ -239,20 +313,103 @@ class WallpaperRepository(private val appContext: Context) {
                 accentHex = "#F97316",
                 description = rawName
             )
-            registerImportedItem(item)
+            registerImportedItem(item, forLockScreen = forLockScreen)
         }
     }
 
-    private fun registerImportedItem(item: WallpaperItem): WallpaperItem {
+    suspend fun importHtmlTheme(uri: Uri, forLockScreen: Boolean = false): Result<HtmlThemeItem> = withContext(Dispatchers.IO) {
+        runCatching {
+            val rawName = queryDisplayName(uri) ?: "theme_${System.currentTimeMillis()}.html"
+            val lowerName = rawName.lowercase()
+            val id = "theme_${UUID.randomUUID().toString().replace("-", "").take(10)}"
+            val targetDir = File(themesRootDir, id).apply { mkdirs() }
+
+            val themeItem = if (isZipUri(uri, lowerName)) {
+                val extracted = extractZipBundle(uri, rawName, id, targetDir)
+                HtmlThemeItem(
+                    id = id,
+                    name = cleanDisplayName(rawName, "HTML Theme"),
+                    entryFile = extracted.entryFile,
+                    isZipBundle = true,
+                    sizeBytes = extracted.sizeBytes,
+                    createdAt = System.currentTimeMillis(),
+                    description = extracted.description
+                )
+            } else {
+                val destFile = File(targetDir, "index.html")
+                val totalBytes = copyUriToFile(uri, destFile, MAX_IMPORT_BYTES, targetDir)
+                HtmlThemeItem(
+                    id = id,
+                    name = cleanDisplayName(rawName, "HTML Theme"),
+                    entryFile = "index.html",
+                    isZipBundle = false,
+                    sizeBytes = totalBytes,
+                    createdAt = System.currentTimeMillis(),
+                    description = rawName
+                )
+            }
+            registerImportedTheme(themeItem, forLockScreen = forLockScreen)
+        }
+    }
+
+    private fun registerImportedTheme(theme: HtmlThemeItem, forLockScreen: Boolean = false): HtmlThemeItem {
+        val current = readSettings()
+        val protectedIds = setOfNotNull(current.activeThemeId, current.lockScreenThemeId)
+        val existing = readUserThemes().toMutableList()
+        while (existing.size >= 8) {
+            val evictIdx = existing.indexOfLast { it.id !in protectedIds }
+                .takeIf { it >= 0 } ?: existing.lastIndex
+            val removed = existing.removeAt(evictIdx)
+            File(themesRootDir, removed.id).deleteRecursively()
+        }
+        existing.add(0, theme)
+        saveUserThemes(existing)
+        if (forLockScreen) {
+            updateSettings {
+                it.copy(
+                    lockScreenThemeId = theme.id,
+                    themeEnabled = true,
+                    wallpaperTarget = if (it.wallpaperTarget == WallpaperTarget.HOME_ONLY) {
+                        WallpaperTarget.BOTH
+                    } else {
+                        it.wallpaperTarget
+                    }
+                )
+            }
+        } else {
+            updateSettings { it.copy(activeThemeId = theme.id, themeEnabled = true) }
+        }
+        _themes.value = existing
+        return theme
+    }
+
+    private fun registerImportedItem(item: WallpaperItem, forLockScreen: Boolean = false): WallpaperItem {
+        val current = readSettings()
+        val protectedIds = setOfNotNull(current.activeWallpaperId, current.lockScreenWallpaperId)
         val existing = readUserWallpapers().toMutableList()
-        // Keep storage tidy (keep latest 10 uploads)
+        // Keep storage tidy (keep latest 10 uploads without evicting active Home/Lock items)
         while (existing.size >= 10) {
-            val removed = existing.removeAt(existing.lastIndex)
+            val evictIdx = existing.indexOfLast { it.id !in protectedIds }
+                .takeIf { it >= 0 } ?: existing.lastIndex
+            val removed = existing.removeAt(evictIdx)
             File(wallpapersRootDir, removed.id).deleteRecursively()
         }
         existing.add(0, item)
         saveUserWallpapers(existing)
-        selectWallpaper(item.id)
+        if (forLockScreen) {
+            updateSettings {
+                it.copy(
+                    lockScreenWallpaperId = item.id,
+                    wallpaperTarget = if (it.wallpaperTarget == WallpaperTarget.HOME_ONLY) {
+                        WallpaperTarget.BOTH
+                    } else {
+                        it.wallpaperTarget
+                    }
+                )
+            }
+        } else {
+            selectWallpaper(item.id)
+        }
         _wallpapers.value = loadAllWallpapers()
         return item
     }
@@ -475,17 +632,67 @@ class WallpaperRepository(private val appContext: Context) {
         }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/')
     }
 
+    private fun readUserThemes(): List<HtmlThemeItem> {
+        val raw = prefs.getString(KEY_USER_THEMES, null) ?: return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val id = obj.getString("id")
+                    val entry = obj.optString("entryFile", "index.html")
+                    val entryFileObj = File(File(themesRootDir, id), entry)
+                    if (!entryFileObj.exists()) continue
+                    add(
+                        HtmlThemeItem(
+                            id = id,
+                            name = obj.optString("name", "HTML Theme"),
+                            entryFile = entry,
+                            isZipBundle = obj.optBoolean("isZipBundle", false),
+                            sizeBytes = obj.optLong("sizeBytes", entryFileObj.length()),
+                            createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
+                            description = obj.optString("description", "")
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun saveUserThemes(list: List<HtmlThemeItem>) {
+        val arr = JSONArray()
+        for (item in list) {
+            val obj = JSONObject()
+            obj.put("id", item.id)
+            obj.put("name", item.name)
+            obj.put("entryFile", item.entryFile)
+            obj.put("isZipBundle", item.isZipBundle)
+            obj.put("sizeBytes", item.sizeBytes)
+            obj.put("createdAt", item.createdAt)
+            obj.put("description", item.description)
+            arr.put(obj)
+        }
+        prefs.edit().putString(KEY_USER_THEMES, arr.toString()).apply()
+    }
+
     companion object {
         const val VIRTUAL_HOST = "wallpaper.local"
         const val PREFS_NAME = "livehtml_prefs"
         private const val WALLPAPERS_DIR = "wallpapers"
+        private const val THEMES_DIR = "themes"
         private const val GIF_FILE_NAME = "wallpaper.gif"
         private const val MAX_IMPORT_BYTES = 100L * 1024L * 1024L
         private const val MAX_VIDEO_BYTES = 250L * 1024L * 1024L
         private const val MAX_ZIP_ENTRIES = 600
 
         private const val KEY_USER_WALLPAPERS = "user_wallpapers_json"
+        private const val KEY_USER_THEMES = "user_themes_json"
         private const val KEY_ACTIVE_ID = "active_wallpaper_id"
+        private const val KEY_ACTIVE_THEME_ID = "active_theme_id"
+        private const val KEY_LOCK_WALLPAPER_ID = "lock_wallpaper_id"
+        private const val KEY_LOCK_THEME_ID = "lock_theme_id"
+        private const val KEY_THEME_ENABLED = "theme_enabled"
+        private const val KEY_THEME_TRANSPARENT = "theme_transparent_bg"
         private const val KEY_WALLPAPER_TARGET = "wallpaper_target"
         private const val KEY_SOUND_ENABLED = "sound_enabled"
         private const val KEY_VOLUME = "sound_volume"

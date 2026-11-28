@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -23,12 +25,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.GifBox
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Videocam
@@ -37,15 +41,11 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -64,17 +64,17 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.data.RenderEngineMode
 import com.example.data.WallpaperRepository
-import com.example.data.WallpaperSettings
 import com.example.data.WallpaperSource
 import com.example.data.WallpaperTarget
 import com.example.ui.MainUiState
 import com.example.ui.PhonePreviewStyle
+import com.example.ui.components.DualLayerWallpaperCanvas
 import com.example.ui.components.PhonePreviewMockup
+import com.example.ui.components.WallpaperSettingsSheetContent
 import com.example.ui.theme.CobaltAccent
 import com.example.ui.theme.CoralGif
 import com.example.ui.theme.EmeraldLive
 import com.example.ui.theme.VioletVideo
-import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -84,6 +84,11 @@ fun HomeScreen(
     onUploadHtml: () -> Unit,
     onUploadVideo: () -> Unit,
     onUploadGif: () -> Unit,
+    onUploadTheme: () -> Unit,
+    onToggleThemeOverlay: () -> Unit,
+    onClearTheme: () -> Unit,
+    onOpenFullscreenPreview: () -> Unit,
+    onDismissFullscreenPreview: () -> Unit,
     onOpenApplySheet: () -> Unit,
     onDismissApplySheet: () -> Unit,
     onApplyForTarget: (WallpaperTarget) -> Unit,
@@ -95,10 +100,34 @@ fun HomeScreen(
     onVolumeChange: (Float) -> Unit,
     onMuteOtherMediaChange: (Boolean) -> Unit,
     onTouchEnabledChange: (Boolean) -> Unit,
+    onThemeTransparentChange: (Boolean) -> Unit,
     onRenderModeChange: (RenderEngineMode) -> Unit,
+    onLockScreenChangeEnabled: (Boolean) -> Unit = {},
+    onUploadLockHtml: () -> Unit = {},
+    onUploadLockVideo: () -> Unit = {},
+    onUploadLockGif: () -> Unit = {},
+    onUploadLockTheme: () -> Unit = {},
+    onClearLockScreenCustom: () -> Unit = {},
+    onApplyLockScreenNow: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val activeSource = uiState.activeWallpaper?.source
+    val hasActiveTheme = uiState.activeTheme != null && uiState.settings.themeEnabled
+    val isLockPreview = uiState.previewStyle == PhonePreviewStyle.LOCK_SCREEN
+    val previewWallpaper = if (isLockPreview) {
+        uiState.lockScreenWallpaper ?: uiState.activeWallpaper
+    } else {
+        uiState.activeWallpaper
+    }
+    val previewTheme = if (isLockPreview) {
+        uiState.lockScreenTheme ?: uiState.activeTheme
+    } else {
+        uiState.activeTheme
+    }
+    val isCustomLockPreview = isLockPreview &&
+        (uiState.lockScreenWallpaper != null || uiState.lockScreenTheme != null)
+    val lockScreenDisabled = isLockPreview &&
+        uiState.settings.wallpaperTarget == WallpaperTarget.HOME_ONLY
 
     Box(
         modifier = modifier.fillMaxSize(),
@@ -108,7 +137,7 @@ fun HomeScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .widthIn(max = 560.dp)
-                .padding(horizontal = 18.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // Minimal clean header
@@ -201,10 +230,10 @@ fun HomeScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // ONLY 3 Upload Buttons in one clean row
+            // 4 Clean Upload Buttons in one row: HTML, Video, GIF + Upload HTML Theme
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 UploadTileButton(
                     title = stringResource(R.string.btn_upload_html),
@@ -239,11 +268,22 @@ fun HomeScreen(
                     testTag = "upload_gif_button",
                     modifier = Modifier.weight(1f)
                 )
+                UploadTileButton(
+                    title = stringResource(R.string.btn_upload_theme),
+                    subtitle = stringResource(R.string.label_html_theme),
+                    icon = Icons.Default.Palette,
+                    accent = EmeraldLive,
+                    selected = hasActiveTheme,
+                    enabled = !uiState.isImporting,
+                    onClick = onUploadTheme,
+                    testTag = "upload_theme_button",
+                    modifier = Modifier.weight(1f)
+                )
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-            // Centered Android Mobile Live Preview Mockup
+            // Centered Android Mobile Live Preview Mockup (Wallpaper + HTML Theme together)
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -251,7 +291,12 @@ fun HomeScreen(
                 contentAlignment = Alignment.Center
             ) {
                 PhonePreviewMockup(
-                    activeWallpaper = uiState.activeWallpaper,
+                    activeWallpaper = previewWallpaper,
+                    activeTheme = previewTheme,
+                    themeEnabled = uiState.settings.themeEnabled,
+                    themeTransparent = uiState.settings.themeTransparentBackground,
+                    isCustomLockPreview = isCustomLockPreview,
+                    lockScreenChangeDisabled = lockScreenDisabled,
                     repository = repository,
                     previewStyle = uiState.previewStyle,
                     soundEnabled = uiState.settings.soundEnabled,
@@ -260,6 +305,9 @@ fun HomeScreen(
                     reloadToken = uiState.previewReloadToken,
                     onPreviewStyleChange = onPreviewStyleChange,
                     onToggleSound = onToggleSound,
+                    onToggleThemeOverlay = onToggleThemeOverlay,
+                    onClearTheme = onClearTheme,
+                    onOpenFullscreenPreview = onOpenFullscreenPreview,
                     modifier = Modifier.fillMaxSize()
                 )
 
@@ -279,7 +327,7 @@ fun HomeScreen(
                                 strokeWidth = 2.dp
                             )
                             Text(
-                                text = "Loading wallpaper...",
+                                text = "Loading file...",
                                 style = MaterialTheme.typography.labelLarge
                             )
                         }
@@ -287,7 +335,7 @@ fun HomeScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
             // Bottom Set Home / Lock Screen primary button
             Button(
@@ -300,7 +348,7 @@ fun HomeScreen(
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp)
+                    .height(54.dp)
                     .testTag("set_home_lock_button")
             ) {
                 Icon(
@@ -313,6 +361,55 @@ fun HomeScreen(
                     text = stringResource(R.string.btn_set_home_lock),
                     style = MaterialTheme.typography.labelLarge
                 )
+            }
+        }
+
+        // Fullscreen Mobile View Preview (shows uploaded HTML Theme + Wallpaper across the entire phone screen)
+        if (uiState.showFullscreenPreview) {
+            BackHandler(onBack = onDismissFullscreenPreview)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+                    .testTag("fullscreen_mobile_view")
+            ) {
+                DualLayerWallpaperCanvas(
+                    activeWallpaper = previewWallpaper,
+                    activeTheme = previewTheme,
+                    themeEnabled = uiState.settings.themeEnabled,
+                    themeTransparent = uiState.settings.themeTransparentBackground,
+                    repository = repository,
+                    previewStyle = uiState.previewStyle,
+                    soundEnabled = uiState.settings.soundEnabled,
+                    volume = uiState.settings.volume,
+                    touchEnabled = uiState.settings.touchEnabled,
+                    reloadToken = uiState.previewReloadToken,
+                    showDefaultSystemChrome = true,
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                Surface(
+                    shape = CircleShape,
+                    color = Color.Black.copy(alpha = 0.62f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.25f)),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .statusBarsPadding()
+                        .padding(14.dp)
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .clickable(onClick = onDismissFullscreenPreview)
+                        .testTag("close_fullscreen_preview_button")
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Exit full mobile view",
+                            tint = Color.White,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
             }
         }
     }
@@ -338,10 +435,20 @@ fun HomeScreen(
         ) {
             WallpaperSettingsSheetContent(
                 settings = uiState.settings,
+                lockScreenWallpaper = uiState.lockScreenWallpaper,
+                lockScreenTheme = uiState.lockScreenTheme,
+                onLockScreenChangeEnabled = onLockScreenChangeEnabled,
+                onUploadLockHtml = onUploadLockHtml,
+                onUploadLockVideo = onUploadLockVideo,
+                onUploadLockGif = onUploadLockGif,
+                onUploadLockTheme = onUploadLockTheme,
+                onClearLockScreenCustom = onClearLockScreenCustom,
+                onApplyLockScreenNow = onApplyLockScreenNow,
                 onSoundEnabledChange = onToggleSound,
                 onVolumeChange = onVolumeChange,
                 onMuteOtherMediaChange = onMuteOtherMediaChange,
                 onTouchEnabledChange = onTouchEnabledChange,
+                onThemeTransparentChange = onThemeTransparentChange,
                 onRenderModeChange = onRenderModeChange
             )
         }
@@ -499,36 +606,36 @@ private fun UploadTileButton(
     )
 
     Surface(
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(16.dp),
         color = containerBg,
         border = BorderStroke(if (selected) 1.5.dp else 1.dp, borderColor),
         modifier = modifier
-            .clip(RoundedCornerShape(18.dp))
+            .clip(RoundedCornerShape(16.dp))
             .clickable(enabled = enabled, onClick = onClick)
             .testTag(testTag)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 12.dp),
+                .padding(horizontal = 4.dp, vertical = 10.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
             Surface(
                 shape = CircleShape,
                 color = accent.copy(alpha = 0.14f),
-                modifier = Modifier.size(38.dp)
+                modifier = Modifier.size(34.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = icon,
                         contentDescription = title,
                         tint = accent,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
             Text(
                 text = title,
                 style = MaterialTheme.typography.labelMedium,
@@ -539,156 +646,12 @@ private fun UploadTileButton(
             )
             Text(
                 text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
+                style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center
             )
         }
-    }
-}
-
-@Composable
-private fun WallpaperSettingsSheetContent(
-    settings: WallpaperSettings,
-    onSoundEnabledChange: (Boolean) -> Unit,
-    onVolumeChange: (Float) -> Unit,
-    onMuteOtherMediaChange: (Boolean) -> Unit,
-    onTouchEnabledChange: (Boolean) -> Unit,
-    onRenderModeChange: (RenderEngineMode) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp)
-            .padding(bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text(
-            text = stringResource(R.string.settings_title),
-            style = MaterialTheme.typography.titleLarge,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-
-        SettingSwitchRow(
-            title = stringResource(R.string.controls_sound_enabled),
-            subtitle = stringResource(R.string.controls_sound_desc),
-            checked = settings.soundEnabled,
-            onCheckedChange = onSoundEnabledChange,
-            testTag = "sheet_sound_switch"
-        )
-
-        Column {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = stringResource(R.string.controls_volume),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = "${(settings.volume * 100).roundToInt()}%",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Slider(
-                value = settings.volume,
-                onValueChange = onVolumeChange,
-                enabled = settings.soundEnabled,
-                modifier = Modifier.testTag("sheet_volume_slider")
-            )
-        }
-
-        SettingSwitchRow(
-            title = stringResource(R.string.controls_mute_other_media),
-            subtitle = stringResource(R.string.controls_mute_other_media_desc),
-            checked = settings.muteDuringOtherMedia,
-            onCheckedChange = onMuteOtherMediaChange,
-            testTag = "sheet_auto_mute_switch"
-        )
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-        SettingSwitchRow(
-            title = stringResource(R.string.controls_touch_enabled),
-            subtitle = stringResource(R.string.controls_touch_desc),
-            checked = settings.touchEnabled,
-            onCheckedChange = onTouchEnabledChange,
-            testTag = "sheet_touch_switch"
-        )
-
-        Text(
-            text = stringResource(R.string.controls_render_mode),
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            RadioButton(
-                selected = settings.renderMode == RenderEngineMode.AUTO_HARDWARE,
-                onClick = { onRenderModeChange(RenderEngineMode.AUTO_HARDWARE) },
-                modifier = Modifier.testTag("sheet_render_hw")
-            )
-            Text(
-                text = stringResource(R.string.controls_render_hardware),
-                style = MaterialTheme.typography.bodyMedium
-            )
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            RadioButton(
-                selected = settings.renderMode == RenderEngineMode.COMPATIBILITY_CANVAS,
-                onClick = { onRenderModeChange(RenderEngineMode.COMPATIBILITY_CANVAS) },
-                modifier = Modifier.testTag("sheet_render_compat")
-            )
-            Text(
-                text = stringResource(R.string.controls_render_compat),
-                style = MaterialTheme.typography.bodyMedium
-            )
-        }
-    }
-}
-
-@Composable
-private fun SettingSwitchRow(
-    title: String,
-    subtitle: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-    testTag: String
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            modifier = Modifier.testTag(testTag)
-        )
     }
 }

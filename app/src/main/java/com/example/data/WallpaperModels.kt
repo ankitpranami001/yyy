@@ -33,8 +33,23 @@ data class WallpaperItem(
         get() = source == WallpaperSource.BUILTIN
 }
 
+data class HtmlThemeItem(
+    val id: String,
+    val name: String,
+    val entryFile: String,
+    val isZipBundle: Boolean,
+    val sizeBytes: Long,
+    val createdAt: Long,
+    val description: String = ""
+)
+
 data class WallpaperSettings(
     val activeWallpaperId: String = BUILTIN_AURORA_ID,
+    val activeThemeId: String? = null,
+    val lockScreenWallpaperId: String? = null,
+    val lockScreenThemeId: String? = null,
+    val themeEnabled: Boolean = true,
+    val themeTransparentBackground: Boolean = true,
     val wallpaperTarget: WallpaperTarget = WallpaperTarget.BOTH,
     val soundEnabled: Boolean = true,
     val volume: Float = 0.75f,

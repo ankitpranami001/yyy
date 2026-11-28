@@ -11,8 +11,10 @@ import android.content.SharedPreferences
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Shader
+import android.graphics.SurfaceTexture
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.AudioAttributes
@@ -30,6 +32,7 @@ import android.view.Display
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceHolder
+import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
@@ -41,6 +44,8 @@ import androidx.core.content.ContextCompat
 import com.example.data.RenderEngineMode
 import com.example.data.WallpaperRepository
 import com.example.data.WallpaperSource
+import com.example.data.WallpaperTarget
+import android.app.WallpaperManager
 import java.io.FileInputStream
 
 class HtmlLiveWallpaperService : WallpaperService() {
@@ -51,6 +56,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
         NONE,
         DEDICATED_INACTIVE_MASK,
         VIDEO_DIRECT,
+        VIDEO_THEME_PRESENTATION,
         GIF_CANVAS,
         WEB_PRESENTATION,
         WEB_CANVAS,
@@ -68,6 +74,8 @@ class HtmlLiveWallpaperService : WallpaperService() {
         private var virtualDisplay: VirtualDisplay? = null
         private var presentation: MaskedPresentation? = null
         private var webView: WebView? = null
+        private var themeWebView: WebView? = null
+        private var videoTextureSurface: Surface? = null
         private var mediaPlayer: MediaPlayer? = null
         private var gifRenderer: GifWallpaperRenderer? = null
         private var isVideoPrepared: Boolean = false
@@ -76,6 +84,8 @@ class HtmlLiveWallpaperService : WallpaperService() {
         private var surfaceWidth: Int = 0
         private var surfaceHeight: Int = 0
         private var currentActiveId: String? = null
+        private var currentThemeId: String? = null
+        private var currentThemeTransparent: Boolean = true
         private var currentRevision: Long = -1L
         private var rendererCrashCount: Int = 0
         private var isEngineVisible: Boolean = false
@@ -89,6 +99,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
 
         private val unlockResyncRunnable = Runnable {
             if (isEngineVisible) {
+                refreshRendererIfScreenContentChanged()
                 syncActivePlaybackAndVisibility()
             }
         }
@@ -96,6 +107,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
         private val lockStateReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 mainHandler.post {
+                    refreshRendererIfScreenContentChanged()
                     syncActivePlaybackAndVisibility()
                     scheduleUnlockResyncs()
                 }
@@ -108,13 +120,19 @@ class HtmlLiveWallpaperService : WallpaperService() {
                 if (holder != null && holder.surface != null && holder.surface.isValid &&
                     surfaceWidth > 0 && surfaceHeight > 0
                 ) {
-                    val active = repository.getActiveWallpaper()
+                    val forLock = isLockScreenNow()
+                    val active = repository.getEffectiveWallpaper(forLock)
+                    val activeTheme = repository.getEffectiveTheme(forLock)
+                    val settings = repository.readSettings()
                     val newRevision = prefs.getLong("content_revision", 0L)
                     val desired = computeDesiredEngineMode()
                     val itemChanged = active.id != currentActiveId || newRevision != currentRevision
+                    val themeChanged = activeTheme?.id != currentThemeId ||
+                        settings.themeTransparentBackground != currentThemeTransparent
                     val modeChanged = desired != engineMode
 
-                    if (modeChanged || (itemChanged && (desired == EngineMode.VIDEO_DIRECT ||
+                    if (modeChanged || themeChanged || (itemChanged && (desired == EngineMode.VIDEO_DIRECT ||
+                            desired == EngineMode.VIDEO_THEME_PRESENTATION ||
                             desired == EngineMode.GIF_CANVAS))
                     ) {
                         rebuildRenderer(holder, surfaceWidth, surfaceHeight)
@@ -177,7 +195,10 @@ class HtmlLiveWallpaperService : WallpaperService() {
                 val surface = holder.surface
                 if (surface == null || !surface.isValid) return@post
 
-                val active = repository.getActiveWallpaper()
+                val forLock = isLockScreenNow()
+                val active = repository.getEffectiveWallpaper(forLock)
+                val activeTheme = repository.getEffectiveTheme(forLock)
+                val settings = repository.readSettings()
                 val revision = repository.getPrefs().getLong("content_revision", 0L)
                 val desired = computeDesiredEngineMode()
                 val sameRendererState = engineMode != EngineMode.NONE &&
@@ -186,6 +207,8 @@ class HtmlLiveWallpaperService : WallpaperService() {
                     surfaceWidth == width &&
                     surfaceHeight == height &&
                     currentActiveId == active.id &&
+                    currentThemeId == activeTheme?.id &&
+                    currentThemeTransparent == settings.themeTransparentBackground &&
                     currentRevision == revision
 
                 surfaceWidth = width
@@ -205,6 +228,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
             mainHandler.removeCallbacks(unlockResyncRunnable)
             mainHandler.post {
                 if (visible) {
+                    refreshRendererIfScreenContentChanged()
                     checkOtherMediaBeforeUnmuting()
                     syncActivePlaybackAndVisibility()
                     scheduleUnlockResyncs()
@@ -217,13 +241,21 @@ class HtmlLiveWallpaperService : WallpaperService() {
         override fun onTouchEvent(event: MotionEvent?) {
             super.onTouchEvent(event)
             if (event == null || !shouldRenderLiveContentNow()) return
-            if (engineMode != EngineMode.WEB_PRESENTATION && engineMode != EngineMode.WEB_CANVAS) return
             val settings = repository.readSettings()
             if (!settings.touchEnabled) return
+            val targetTheme = themeWebView
+            val targetWp = if (engineMode == EngineMode.WEB_PRESENTATION || engineMode == EngineMode.WEB_CANVAS) {
+                webView
+            } else {
+                null
+            }
+            if (targetTheme == null && targetWp == null) return
+
             val copy = MotionEvent.obtain(event)
             mainHandler.post {
                 try {
-                    webView?.dispatchTouchEvent(copy)
+                    targetTheme?.dispatchTouchEvent(copy)
+                    targetWp?.dispatchTouchEvent(copy)
                 } catch (_: Throwable) {
                 } finally {
                     copy.recycle()
@@ -270,15 +302,47 @@ class HtmlLiveWallpaperService : WallpaperService() {
             }
         }
 
+        private fun isKeyguardLockedNow(): Boolean =
+            runCatching { keyguardManager.isKeyguardLocked }.getOrDefault(false)
+
+        private fun isLockScreenNow(): Boolean {
+            val settings = repository.readSettings()
+            if (isPreview) {
+                return settings.wallpaperTarget == WallpaperTarget.LOCK_ONLY ||
+                    (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+                        currentWallpaperFlags() == WallpaperManager.FLAG_LOCK)
+            }
+            return WallpaperPlacementPolicy.isLockScreenContext(
+                sdkInt = Build.VERSION.SDK_INT,
+                wallpaperFlags = currentWallpaperFlags(),
+                isKeyguardLocked = isKeyguardLockedNow()
+            )
+        }
+
+        private fun refreshRendererIfScreenContentChanged() {
+            val holder = surfaceHolder ?: return
+            val surface = holder.surface ?: return
+            if (!surface.isValid || surfaceWidth <= 0 || surfaceHeight <= 0) return
+            val forLock = isLockScreenNow()
+            val active = repository.getEffectiveWallpaper(forLock)
+            val activeTheme = repository.getEffectiveTheme(forLock)
+            val desired = computeDesiredEngineMode()
+            if (active.id != currentActiveId ||
+                activeTheme?.id != currentThemeId ||
+                desired != engineMode
+            ) {
+                rebuildRenderer(holder, surfaceWidth, surfaceHeight)
+            }
+        }
+
         private fun shouldRenderLiveContentNow(): Boolean {
             val target = repository.readSettings().wallpaperTarget
-            val isLocked = runCatching { keyguardManager.isKeyguardLocked }.getOrDefault(false)
             return WallpaperPlacementPolicy.shouldRenderLiveContent(
                 isPreview = isPreview,
                 target = target,
                 sdkInt = Build.VERSION.SDK_INT,
                 wallpaperFlags = currentWallpaperFlags(),
-                isKeyguardLocked = isLocked
+                isKeyguardLocked = isKeyguardLockedNow()
             )
         }
 
@@ -293,13 +357,27 @@ class HtmlLiveWallpaperService : WallpaperService() {
                 return EngineMode.DEDICATED_INACTIVE_MASK
             }
 
-            val active = repository.getActiveWallpaper()
+            val forLock = isLockScreenNow()
+            val active = repository.getEffectiveWallpaper(forLock)
+            val activeTheme = repository.getEffectiveTheme(forLock)
+            val useUploadedWallpaperBehindTheme = settings.themeTransparentBackground
+
+            // When an HTML Theme is active and user turned OFF "Use Uploaded Wallpaper",
+            // show the HTML Theme's own built-in wallpaper & view directly without running the uploaded wallpaper underneath.
+            if (activeTheme != null && !useUploadedWallpaperBehindTheme) {
+                val useHardware = settings.renderMode == RenderEngineMode.AUTO_HARDWARE &&
+                    rendererCrashCount == 0
+                return if (useHardware) EngineMode.WEB_PRESENTATION else EngineMode.WEB_CANVAS
+            }
+
             if (active.source == WallpaperSource.UPLOADED_VIDEO) {
                 val videoFile = repository.getMediaFile(active)
                 if (videoFile != null && videoFile.exists()) {
-                    // Always use direct MediaPlayer on Surface for universal OEM compatibility
-                    // (MIUI/HyperOS, ColorOS, FuntouchOS, One UI, MediaTek, Snapdragon, Exynos)
-                    return EngineMode.VIDEO_DIRECT
+                    return if (activeTheme != null) {
+                        EngineMode.VIDEO_THEME_PRESENTATION
+                    } else {
+                        EngineMode.VIDEO_DIRECT
+                    }
                 }
             }
 
@@ -321,8 +399,13 @@ class HtmlLiveWallpaperService : WallpaperService() {
             if (surface == null || !surface.isValid) return
 
             currentSurface = surface
-            val active = repository.getActiveWallpaper()
+            val forLock = isLockScreenNow()
+            val active = repository.getEffectiveWallpaper(forLock)
+            val activeTheme = repository.getEffectiveTheme(forLock)
+            val settings = repository.readSettings()
             currentActiveId = active.id
+            currentThemeId = activeTheme?.id
+            currentThemeTransparent = settings.themeTransparentBackground
             currentRevision = repository.getPrefs().getLong("content_revision", 0L)
 
             val desired = computeDesiredEngineMode()
@@ -330,6 +413,23 @@ class HtmlLiveWallpaperService : WallpaperService() {
                 EngineMode.DEDICATED_INACTIVE_MASK -> {
                     engineMode = EngineMode.DEDICATED_INACTIVE_MASK
                     clearCanvasSurfaceToBlack()
+                }
+
+                EngineMode.VIDEO_THEME_PRESENTATION -> {
+                    val videoFile = repository.getMediaFile(active)
+                    if (videoFile != null && videoFile.exists()) {
+                        if (activeTheme != null && startVideoThemePresentation(surface, width, height, videoFile.absolutePath, activeTheme.id)) {
+                            engineMode = EngineMode.VIDEO_THEME_PRESENTATION
+                            loadActiveThemeOverlay()
+                            syncActivePlaybackAndVisibility()
+                            return
+                        }
+                        // Fallback to universal direct MediaPlayer so video never goes black
+                        engineMode = EngineMode.VIDEO_DIRECT
+                        startDirectVideoEngine(holder, videoFile.absolutePath)
+                        return
+                    }
+                    startWebEngine(surface, width, height, preferHardware = false)
                 }
 
                 EngineMode.VIDEO_DIRECT -> {
@@ -348,6 +448,10 @@ class HtmlLiveWallpaperService : WallpaperService() {
                     if (gifFile != null && renderer.load(gifFile)) {
                         gifRenderer = renderer
                         engineMode = EngineMode.GIF_CANVAS
+                        if (activeTheme != null) {
+                            attachCanvasThemeWebView(width, height)
+                            loadActiveThemeOverlay()
+                        }
                         syncActivePlaybackAndVisibility()
                         return
                     }
@@ -371,15 +475,43 @@ class HtmlLiveWallpaperService : WallpaperService() {
             height: Int,
             preferHardware: Boolean
         ) {
-            if (preferHardware && startWebPresentation(surface, width, height)) {
+            val activeTheme = repository.getEffectiveTheme(isLockScreenNow())
+            val settings = repository.readSettings()
+            val themeOwnsWallpaper = activeTheme != null && !settings.themeTransparentBackground
+
+            if (themeOwnsWallpaper) {
+                // Render the uploaded HTML Theme directly with its own wallpaper/background
+                if (preferHardware && startWebPresentation(surface, width, height, includeTheme = false)) {
+                    engineMode = EngineMode.WEB_PRESENTATION
+                    loadUrlInPrimaryWebView(repository.resolveThemeUrl(activeTheme))
+                    syncActivePlaybackAndVisibility()
+                    return
+                }
+                if (startCanvasFallbackWebView(width, height)) {
+                    engineMode = EngineMode.WEB_CANVAS
+                    loadUrlInPrimaryWebView(repository.resolveThemeUrl(activeTheme))
+                    syncActivePlaybackAndVisibility()
+                } else {
+                    engineMode = EngineMode.NATIVE_FALLBACK_CANVAS
+                    drawNativeFallbackCanvas()
+                }
+                return
+            }
+
+            if (preferHardware && startWebPresentation(surface, width, height, includeTheme = activeTheme != null)) {
                 engineMode = EngineMode.WEB_PRESENTATION
                 loadActiveWebWallpaper()
+                if (activeTheme != null) loadActiveThemeOverlay()
                 syncActivePlaybackAndVisibility()
                 return
             }
             if (startCanvasFallbackWebView(width, height)) {
                 engineMode = EngineMode.WEB_CANVAS
                 loadActiveWebWallpaper()
+                if (activeTheme != null) {
+                    attachCanvasThemeWebView(width, height)
+                    loadActiveThemeOverlay()
+                }
                 syncActivePlaybackAndVisibility()
             } else {
                 engineMode = EngineMode.NATIVE_FALLBACK_CANVAS
@@ -390,6 +522,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
         private fun syncActivePlaybackAndVisibility() {
             val allowedNow = shouldRenderLiveContentNow()
             val activeNow = isEngineVisible && allowedNow
+            val modeStr = if (isKeyguardLockedNow()) "lock" else "home"
 
             when (engineMode) {
                 EngineMode.DEDICATED_INACTIVE_MASK -> {
@@ -409,8 +542,24 @@ class HtmlLiveWallpaperService : WallpaperService() {
                     }
                 }
 
+                EngineMode.VIDEO_THEME_PRESENTATION -> {
+                    presentation?.setMasked(!allowedNow)
+                    val mp = mediaPlayer
+                    if (activeNow && mp != null && isVideoPrepared) {
+                        applyVideoVolume(mp)
+                        runCatching { if (!mp.isPlaying) mp.start() }
+                    } else if (mp != null) {
+                        runCatching {
+                            mp.setVolume(0f, 0f)
+                            if (isVideoPrepared && mp.isPlaying) mp.pause()
+                        }
+                    }
+                    syncThemeWebViewState(activeNow, modeStr)
+                }
+
                 EngineMode.GIF_CANVAS -> {
                     val renderer = gifRenderer
+                    syncThemeWebViewState(activeNow, modeStr)
                     if (activeNow && renderer != null) {
                         renderer.setPlaying(true)
                         drawGifToCanvas()
@@ -436,12 +585,13 @@ class HtmlLiveWallpaperService : WallpaperService() {
                         applyAudioAndVisibilityState()
                     } else {
                         applyAudioAndVisibilityState()
-                        // NEVER call webView.pauseTimers() (it freezes WebViews process-wide)
                         runCatching { webView?.onPause() }
                     }
+                    syncThemeWebViewState(activeNow, modeStr)
                 }
 
                 EngineMode.WEB_CANVAS -> {
+                    syncThemeWebViewState(activeNow, modeStr)
                     if (activeNow) {
                         runCatching {
                             webView?.onResume()
@@ -472,19 +622,28 @@ class HtmlLiveWallpaperService : WallpaperService() {
             }
         }
 
+        private fun syncThemeWebViewState(activeNow: Boolean, viewMode: String) {
+            val tv = themeWebView ?: return
+            if (activeNow) {
+                runCatching {
+                    tv.onResume()
+                    tv.resumeTimers()
+                    tv.evaluateJavascript(AudioBridgeScript.buildViewModeJs(viewMode), null)
+                    tv.invalidate()
+                }
+                applyAudioAndVisibilityState(tv)
+            } else {
+                applyAudioAndVisibilityState(tv)
+                runCatching { tv.onPause() }
+            }
+        }
+
         private fun startDirectVideoEngine(holder: SurfaceHolder, path: String) {
             isVideoPrepared = false
             runCatching {
                 val mp = MediaPlayer().apply {
                     setSurface(holder.surface)
-                    // Prefer FileDescriptor dataSource for strict OEM SELinux compatibility
-                    val fdSet = runCatching {
-                        FileInputStream(path).use { fis -> setDataSource(fis.fd) }
-                        true
-                    }.getOrDefault(false)
-                    if (!fdSet) {
-                        setDataSource(path)
-                    }
+                    configureMediaDataSource(this, path)
                     isLooping = true
                     runCatching {
                         setVideoScalingMode(MediaPlayer.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING)
@@ -516,7 +675,132 @@ class HtmlLiveWallpaperService : WallpaperService() {
             }
         }
 
-        private fun startWebPresentation(surface: Surface, width: Int, height: Int): Boolean {
+        private fun configureMediaDataSource(mp: MediaPlayer, path: String) {
+            val fdSet = runCatching {
+                FileInputStream(path).use { fis -> mp.setDataSource(fis.fd) }
+                true
+            }.getOrDefault(false)
+            if (!fdSet) {
+                mp.setDataSource(path)
+            }
+        }
+
+        private fun startVideoThemePresentation(
+            surface: Surface,
+            width: Int,
+            height: Int,
+            videoPath: String,
+            themeId: String
+        ): Boolean {
+            return try {
+                val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+                val densityDpi = resources.displayMetrics.densityDpi
+                val vd = displayManager.createVirtualDisplay(
+                    "AnkitVideoThemeDisplay_$themeId",
+                    width,
+                    height,
+                    densityDpi,
+                    surface,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY
+                ) ?: return false
+
+                val displayContext = createDisplayContext(vd.display)
+                val textureView = TextureView(displayContext).apply {
+                    layoutParams = FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                    surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                        override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                            prepareTextureVideoPlayer(this@apply, st, videoPath)
+                        }
+                        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
+                            val mp = mediaPlayer
+                            if (mp != null && isVideoPrepared) {
+                                applyCenterCrop(this@apply, mp.videoWidth, mp.videoHeight)
+                            }
+                        }
+                        override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                            releaseMediaPlayerOnly()
+                            return true
+                        }
+                        override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit
+                    }
+                }
+                val themeWv = createConfiguredWebView(
+                    context = displayContext,
+                    hardwareAccelerated = true,
+                    transparent = repository.readSettings().themeTransparentBackground
+                )
+                val pres = MaskedPresentation(displayContext, vd.display, textureView, themeWv)
+                pres.show()
+
+                virtualDisplay = vd
+                presentation = pres
+                themeWebView = themeWv
+                true
+            } catch (t: Throwable) {
+                Log.w(TAG, "Video+Theme presentation unavailable, falling back to direct video", t)
+                tearDownRenderer()
+                false
+            }
+        }
+
+        private fun prepareTextureVideoPlayer(
+            textureView: TextureView,
+            st: SurfaceTexture,
+            videoPath: String
+        ) {
+            releaseMediaPlayerOnly()
+            val surface = Surface(st)
+            videoTextureSurface = surface
+            runCatching {
+                val mp = MediaPlayer().apply {
+                    setSurface(surface)
+                    configureMediaDataSource(this, videoPath)
+                    isLooping = true
+                    setOnVideoSizeChangedListener { _, vw, vh ->
+                        textureView.post { applyCenterCrop(textureView, vw, vh) }
+                    }
+                    setOnPreparedListener { player ->
+                        isVideoPrepared = true
+                        textureView.post { applyCenterCrop(textureView, player.videoWidth, player.videoHeight) }
+                        syncActivePlaybackAndVisibility()
+                    }
+                    setOnCompletionListener { player ->
+                        if (isEngineVisible && shouldRenderLiveContentNow()) {
+                            runCatching {
+                                player.seekTo(0)
+                                player.start()
+                            }
+                        }
+                    }
+                    setOnErrorListener { _, _, _ -> true }
+                    prepareAsync()
+                }
+                mediaPlayer = mp
+            }
+        }
+
+        private fun applyCenterCrop(textureView: TextureView, videoW: Int, videoH: Int) {
+            val viewW = textureView.width.toFloat()
+            val viewH = textureView.height.toFloat()
+            if (viewW <= 0f || viewH <= 0f || videoW <= 0 || videoH <= 0) return
+            val scaleX = videoW.toFloat() / viewW
+            val scaleY = videoH.toFloat() / viewH
+            val maxScale = maxOf(1f / scaleX, 1f / scaleY)
+            val matrix = Matrix().apply {
+                setScale(scaleX * maxScale, scaleY * maxScale, viewW / 2f, viewH / 2f)
+            }
+            textureView.setTransform(matrix)
+        }
+
+        private fun startWebPresentation(
+            surface: Surface,
+            width: Int,
+            height: Int,
+            includeTheme: Boolean
+        ): Boolean {
             return try {
                 val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
                 val densityDpi = resources.displayMetrics.densityDpi
@@ -530,13 +814,23 @@ class HtmlLiveWallpaperService : WallpaperService() {
                 ) ?: return false
 
                 val displayContext = createDisplayContext(vd.display)
-                val wv = createConfiguredWebView(displayContext, hardwareAccelerated = true)
-                val pres = MaskedPresentation(displayContext, vd.display, wv)
+                val wv = createConfiguredWebView(displayContext, hardwareAccelerated = true, transparent = false)
+                val tv = if (includeTheme) {
+                    createConfiguredWebView(
+                        displayContext,
+                        hardwareAccelerated = true,
+                        transparent = repository.readSettings().themeTransparentBackground
+                    )
+                } else {
+                    null
+                }
+                val pres = MaskedPresentation(displayContext, vd.display, wv, tv)
                 pres.show()
 
                 virtualDisplay = vd
                 presentation = pres
                 webView = wv
+                themeWebView = tv
                 true
             } catch (t: Throwable) {
                 Log.w(TAG, "Hardware presentation unavailable, falling back to Universal Canvas", t)
@@ -547,11 +841,8 @@ class HtmlLiveWallpaperService : WallpaperService() {
 
         private fun startCanvasFallbackWebView(width: Int, height: Int): Boolean {
             return try {
-                val wv = createConfiguredWebView(applicationContext, hardwareAccelerated = false)
-                val widthSpec = View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY)
-                val heightSpec = View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY)
-                wv.measure(widthSpec, heightSpec)
-                wv.layout(0, 0, width, height)
+                val wv = createConfiguredWebView(applicationContext, hardwareAccelerated = false, transparent = false)
+                measureAndLayoutOffscreen(wv, width, height)
                 webView = wv
                 true
             } catch (t: Throwable) {
@@ -561,13 +852,33 @@ class HtmlLiveWallpaperService : WallpaperService() {
             }
         }
 
+        private fun attachCanvasThemeWebView(width: Int, height: Int) {
+            runCatching {
+                val tv = createConfiguredWebView(
+                    context = applicationContext,
+                    hardwareAccelerated = false,
+                    transparent = repository.readSettings().themeTransparentBackground
+                )
+                measureAndLayoutOffscreen(tv, width, height)
+                themeWebView = tv
+            }
+        }
+
+        private fun measureAndLayoutOffscreen(view: View, width: Int, height: Int) {
+            val widthSpec = View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY)
+            val heightSpec = View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY)
+            view.measure(widthSpec, heightSpec)
+            view.layout(0, 0, width, height)
+        }
+
         @SuppressLint("SetJavaScriptEnabled")
         private fun createConfiguredWebView(
             context: Context,
-            hardwareAccelerated: Boolean
+            hardwareAccelerated: Boolean,
+            transparent: Boolean
         ): WebView {
             return WebView(context).apply {
-                setBackgroundColor(Color.BLACK)
+                setBackgroundColor(if (transparent) Color.TRANSPARENT else Color.BLACK)
                 isVerticalScrollBarEnabled = false
                 isHorizontalScrollBarEnabled = false
                 overScrollMode = View.OVER_SCROLL_NEVER
@@ -595,10 +906,16 @@ class HtmlLiveWallpaperService : WallpaperService() {
                     repository = repository,
                     onPageReady = { loadedView ->
                         applyAudioAndVisibilityState(loadedView)
-                        if (engineMode == EngineMode.WEB_CANVAS && isEngineVisible && shouldRenderLiveContentNow()) {
-                            drawWebViewToCanvas()
+                        val modeStr = if (isKeyguardLockedNow()) "lock" else "home"
+                        runCatching {
+                            loadedView.evaluateJavascript(AudioBridgeScript.buildViewModeJs(modeStr), null)
+                        }
+                        if ((engineMode == EngineMode.WEB_CANVAS || engineMode == EngineMode.GIF_CANVAS) &&
+                            isEngineVisible && shouldRenderLiveContentNow()
+                        ) {
+                            if (engineMode == EngineMode.GIF_CANVAS) drawGifToCanvas() else drawWebViewToCanvas()
                             scheduleNextCanvasFrame()
-                        } else if (engineMode == EngineMode.WEB_PRESENTATION) {
+                        } else if (engineMode == EngineMode.WEB_PRESENTATION || engineMode == EngineMode.VIDEO_THEME_PRESENTATION) {
                             loadedView.invalidate()
                             presentation?.window?.decorView?.invalidate()
                         }
@@ -619,7 +936,6 @@ class HtmlLiveWallpaperService : WallpaperService() {
                 if (rendererCrashCount <= MAX_SERVICE_RENDERER_RETRIES &&
                     surfaceWidth > 0 && surfaceHeight > 0
                 ) {
-                    Log.w(TAG, "Recovering wallpaper WebView in universal canvas mode (attempt $rendererCrashCount)")
                     mainHandler.postDelayed({
                         val holder = surfaceHolder
                         if (holder != null && holder.surface != null && holder.surface.isValid) {
@@ -631,12 +947,33 @@ class HtmlLiveWallpaperService : WallpaperService() {
         }
 
         private fun loadActiveWebWallpaper() {
-            val active = repository.getActiveWallpaper()
-            val url = repository.resolveWallpaperUrl(active)
+            val forLock = isLockScreenNow()
+            val active = repository.getEffectiveWallpaper(forLock)
+            val activeTheme = repository.getEffectiveTheme(forLock)
+            val settings = repository.readSettings()
+            val url = if (activeTheme != null && !settings.themeTransparentBackground) {
+                repository.resolveThemeUrl(activeTheme)
+            } else {
+                repository.resolveWallpaperUrl(active)
+            }
+            loadUrlInPrimaryWebView(url)
+        }
+
+        private fun loadUrlInPrimaryWebView(url: String) {
             runCatching {
                 webView?.onResume()
                 webView?.resumeTimers()
                 webView?.loadUrl(url)
+            }
+        }
+
+        private fun loadActiveThemeOverlay() {
+            val theme = repository.getEffectiveTheme(isLockScreenNow()) ?: return
+            val url = repository.resolveThemeUrl(theme)
+            runCatching {
+                themeWebView?.onResume()
+                themeWebView?.resumeTimers()
+                themeWebView?.loadUrl(url)
             }
         }
 
@@ -652,7 +989,7 @@ class HtmlLiveWallpaperService : WallpaperService() {
         }
 
         private fun applyAudioAndVisibilityState(target: WebView? = webView) {
-            if (engineMode == EngineMode.VIDEO_DIRECT) {
+            if (target == null && (engineMode == EngineMode.VIDEO_DIRECT || engineMode == EngineMode.VIDEO_THEME_PRESENTATION)) {
                 applyVideoVolume(mediaPlayer)
                 return
             }
@@ -712,9 +1049,13 @@ class HtmlLiveWallpaperService : WallpaperService() {
             if (!holder.surface.isValid || surfaceWidth <= 0 || surfaceHeight <= 0) return
             var canvas: Canvas? = null
             try {
+                val tv = themeWebView
+                tv?.invalidate()
                 canvas = holder.lockCanvas()
                 if (canvas != null) {
                     renderer.drawFrame(canvas, canvas.width, canvas.height)
+                    // Composite uploaded HTML Theme directly over the live GIF frame!
+                    tv?.draw(canvas)
                 }
             } catch (_: Throwable) {
             } finally {
@@ -729,10 +1070,14 @@ class HtmlLiveWallpaperService : WallpaperService() {
             var canvas: Canvas? = null
             try {
                 wv.invalidate()
+                val tv = themeWebView
+                tv?.invalidate()
                 canvas = holder.lockCanvas()
                 if (canvas != null) {
                     canvas.drawColor(Color.BLACK)
                     wv.draw(canvas)
+                    // Composite uploaded HTML Theme directly over the live HTML Wallpaper!
+                    tv?.draw(canvas)
                 }
             } catch (_: Throwable) {
             } finally {
@@ -765,15 +1110,13 @@ class HtmlLiveWallpaperService : WallpaperService() {
                 }
             }
             mediaPlayer = null
+            runCatching { videoTextureSurface?.release() }
+            videoTextureSurface = null
         }
 
-        private fun tearDownRenderer() {
-            stopCanvasLoop()
-            releaseMediaPlayerOnly()
-            runCatching { gifRenderer?.release() }
-            gifRenderer = null
+        private fun destroyWebViewSafely(wv: WebView?) {
             runCatching {
-                webView?.apply {
+                wv?.apply {
                     stopLoading()
                     webViewClient = WebViewClient()
                     webChromeClient = null
@@ -782,6 +1125,16 @@ class HtmlLiveWallpaperService : WallpaperService() {
                     destroy()
                 }
             }
+        }
+
+        private fun tearDownRenderer() {
+            stopCanvasLoop()
+            releaseMediaPlayerOnly()
+            runCatching { gifRenderer?.release() }
+            gifRenderer = null
+            destroyWebViewSafely(themeWebView)
+            themeWebView = null
+            destroyWebViewSafely(webView)
             webView = null
             runCatching { presentation?.dismiss() }
             presentation = null
@@ -866,7 +1219,8 @@ class HtmlLiveWallpaperService : WallpaperService() {
     private class MaskedPresentation(
         outerContext: Context,
         display: Display,
-        private val contentView: View
+        private val contentView: View,
+        private val themeOverlayView: View? = null
     ) : Presentation(outerContext, display) {
 
         private var maskView: View? = null
@@ -884,6 +1238,15 @@ class HtmlLiveWallpaperService : WallpaperService() {
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
                 )
+                if (themeOverlayView != null) {
+                    addView(
+                        themeOverlayView,
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    )
+                }
                 val mask = View(context).apply {
                     setBackgroundColor(Color.BLACK)
                     visibility = if (pendingMasked) View.VISIBLE else View.GONE

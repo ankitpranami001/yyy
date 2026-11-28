@@ -66,4 +66,20 @@ object WallpaperPlacementPolicy {
         if (isPreview || target == WallpaperTarget.BOTH) return false
         return !isDedicatedSingleScreenEngine(sdkInt, wallpaperFlags)
     }
+
+    /**
+     * Returns true when this wallpaper engine is currently representing the Lock Screen
+     * (either via a dedicated Android 14+ FLAG_LOCK engine or while Keyguard is locked on a shared engine).
+     */
+    fun isLockScreenContext(
+        sdkInt: Int,
+        wallpaperFlags: Int,
+        isKeyguardLocked: Boolean
+    ): Boolean {
+        if (sdkInt >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            if (wallpaperFlags == WallpaperManager.FLAG_LOCK) return true
+            if (wallpaperFlags == WallpaperManager.FLAG_SYSTEM) return false
+        }
+        return isKeyguardLocked
+    }
 }

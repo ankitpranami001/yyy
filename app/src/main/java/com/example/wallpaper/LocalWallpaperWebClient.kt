@@ -58,7 +58,17 @@ class LocalWallpaperWebClient(
             val id = userRelPath.substring(0, slashIdx)
             val filePath = userRelPath.substring(slashIdx + 1)
             val baseDir = repository.getUserWallpaperDir(id)
-            return serveUserFile(baseDir, filePath, request.requestHeaders["Range"])
+            return serveUserFile(baseDir, filePath, request.requestHeaders["Range"], isThemeOverlay = false)
+        }
+
+        if (path.startsWith("theme/")) {
+            val themeRelPath = path.removePrefix("theme/")
+            val slashIdx = themeRelPath.indexOf('/')
+            if (slashIdx <= 0) return notFoundResponse()
+            val id = themeRelPath.substring(0, slashIdx)
+            val filePath = themeRelPath.substring(slashIdx + 1)
+            val baseDir = repository.getUserThemeDir(id)
+            return serveUserFile(baseDir, filePath, request.requestHeaders["Range"], isThemeOverlay = true)
         }
 
         return notFoundResponse()
@@ -117,7 +127,8 @@ class LocalWallpaperWebClient(
     private fun serveUserFile(
         baseDir: File,
         relativePath: String,
-        rangeHeader: String?
+        rangeHeader: String?,
+        isThemeOverlay: Boolean
     ): WebResourceResponse {
         return runCatching {
             val canonicalBase = baseDir.canonicalPath + File.separator
@@ -129,7 +140,12 @@ class LocalWallpaperWebClient(
             val mime = guessMimeType(target.name)
             if (mime == "text/html") {
                 val html = target.readText(Charsets.UTF_8)
-                val injected = AudioBridgeScript.injectIntoHtml(html)
+                val injected = if (isThemeOverlay) {
+                    val forceTransparent = repository.readSettings().themeTransparentBackground
+                    AudioBridgeScript.injectThemeIntoHtml(html, forceTransparentRoot = forceTransparent)
+                } else {
+                    AudioBridgeScript.injectIntoHtml(html)
+                }
                 return WebResourceResponse(
                     "text/html",
                     "UTF-8",
