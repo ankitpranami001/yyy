@@ -223,41 +223,6 @@ class WallpaperAppRobolectricTest {
         )
     }
 
-    @Test
-    fun placementPolicy_isLockScreenContext_handlesDedicatedAndSharedEngines() {
-        // Android 14+ dedicated engines honor FLAG_LOCK / FLAG_SYSTEM directly
-        assertTrue(
-            WallpaperPlacementPolicy.isLockScreenContext(
-                sdkInt = 34,
-                wallpaperFlags = WallpaperManager.FLAG_LOCK,
-                isKeyguardLocked = false
-            )
-        )
-        assertFalse(
-            WallpaperPlacementPolicy.isLockScreenContext(
-                sdkInt = 34,
-                wallpaperFlags = WallpaperManager.FLAG_SYSTEM,
-                isKeyguardLocked = true
-            )
-        )
-        // Shared engines fall back to keyguard lock state
-        val sharedFlags = WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK
-        assertTrue(
-            WallpaperPlacementPolicy.isLockScreenContext(
-                sdkInt = 34,
-                wallpaperFlags = sharedFlags,
-                isKeyguardLocked = true
-            )
-        )
-        assertFalse(
-            WallpaperPlacementPolicy.isLockScreenContext(
-                sdkInt = 33,
-                wallpaperFlags = 0,
-                isKeyguardLocked = false
-            )
-        )
-    }
-
     // -------------------------------------------------------------------------
     // 2. WallpaperRepository Tests (HTML / ZIP / Video / GIF / Settings)
     // -------------------------------------------------------------------------
@@ -343,79 +308,6 @@ class WallpaperAppRobolectricTest {
         assertEquals(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER, candidates[0].second.action)
         assertEquals(WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER, candidates[1].second.action)
         assertEquals(android.content.Intent.ACTION_CHOOSER, candidates.last().second.action)
-    }
-
-    @Test
-    fun repositoryAndWebClient_htmlThemeWorksAlongsideWallpaper() = runBlocking {
-        // 1. Upload a Video wallpaper
-        val fakeVideo = createTempFile("bg_city.mp4", ByteArray(512) { it.toByte() })
-        val videoItem = repository.importVideo(Uri.fromFile(fakeVideo)).getOrThrow()
-
-        // 2. Upload an HTML Theme — wallpaper MUST remain active alongside theme!
-        val themeHtml = createTempFile(
-            "glass_hud.html",
-            "<html><head><title>HUD</title></head><body><div>Clock Widget</div></body></html>".toByteArray()
-        )
-        val themeResult = repository.importHtmlTheme(Uri.fromFile(themeHtml))
-        assertTrue(themeResult.isSuccess)
-        val theme = themeResult.getOrThrow()
-
-        assertEquals(videoItem.id, repository.getActiveWallpaper().id)
-        assertNotNull(repository.getActiveTheme())
-        assertEquals(theme.id, repository.getActiveTheme()!!.id)
-        assertTrue(repository.resolveThemeUrl(theme).startsWith("https://wallpaper.local/theme/${theme.id}/index.html"))
-
-        // 3. WebClient serves theme HTML with transparent overlay bridge
-        val client = LocalWallpaperWebClient(context = context, repository = repository)
-        val respTransparent = client.shouldInterceptRequest(null, fakeRequest(repository.resolveThemeUrl(theme)))
-        assertNotNull(respTransparent)
-        assertEquals(200, respTransparent!!.statusCode)
-        val bodyTransparent = respTransparent.data.bufferedReader().use { it.readText() }
-        assertTrue(bodyTransparent.contains("__ankitThemeOverlay"))
-        assertTrue(bodyTransparent.contains("__ankit_theme_overlay_css"))
-
-        // 4. Disabling transparent background omits forced transparent CSS
-        repository.updateSettings { it.copy(themeTransparentBackground = false) }
-        val respOpaque = client.shouldInterceptRequest(null, fakeRequest(repository.resolveThemeUrl(theme)))
-        val bodyOpaque = respOpaque!!.data.bufferedReader().use { it.readText() }
-        assertFalse(bodyOpaque.contains("__ankit_theme_overlay_css"))
-
-        // 5. Clearing active theme restores default view while keeping wallpaper intact
-        repository.clearActiveTheme()
-        assertEquals(null, repository.getActiveTheme())
-        assertEquals(videoItem.id, repository.getActiveWallpaper().id)
-    }
-
-    @Test
-    fun repository_separateLockScreenWallpaperAndTheme_independentFromHomeScreen() = runBlocking {
-        // Home Screen wallpaper & theme
-        val homeHtml = createTempFile("home_bg.html", "<html><body>Home</body></html>".toByteArray())
-        val homeWp = repository.importHtmlOrZip(Uri.fromFile(homeHtml), forLockScreen = false).getOrThrow()
-        val homeThemeFile = createTempFile("home_theme.html", "<html><body>Home Theme</body></html>".toByteArray())
-        val homeTheme = repository.importHtmlTheme(Uri.fromFile(homeThemeFile), forLockScreen = false).getOrThrow()
-
-        // Before custom Lock Screen is set, Lock Screen resolves to Home Screen wallpaper & theme
-        assertEquals(homeWp.id, repository.getEffectiveWallpaper(forLockScreen = true).id)
-        assertEquals(homeTheme.id, repository.getEffectiveTheme(forLockScreen = true)?.id)
-
-        // Upload a separate Lock Screen wallpaper & theme (even if previously HOME_ONLY, auto-enables Lock Screen)
-        repository.updateSettings { it.copy(wallpaperTarget = WallpaperTarget.HOME_ONLY) }
-        val lockHtml = createTempFile("lock_bg.html", "<html><body>Lock</body></html>".toByteArray())
-        val lockWp = repository.importHtmlOrZip(Uri.fromFile(lockHtml), forLockScreen = true).getOrThrow()
-        val lockThemeFile = createTempFile("lock_theme.html", "<html><body>Lock Theme</body></html>".toByteArray())
-        val lockTheme = repository.importHtmlTheme(Uri.fromFile(lockThemeFile), forLockScreen = true).getOrThrow()
-
-        // Home Screen stays intact while Lock Screen resolves to custom items
-        assertEquals(homeWp.id, repository.getEffectiveWallpaper(forLockScreen = false).id)
-        assertEquals(homeTheme.id, repository.getEffectiveTheme(forLockScreen = false)?.id)
-        assertEquals(lockWp.id, repository.getEffectiveWallpaper(forLockScreen = true).id)
-        assertEquals(lockTheme.id, repository.getEffectiveTheme(forLockScreen = true)?.id)
-        assertEquals(WallpaperTarget.BOTH, repository.readSettings().wallpaperTarget)
-
-        // Resetting Lock Screen restores matching Home Screen
-        repository.clearLockScreenCustomization()
-        assertEquals(homeWp.id, repository.getEffectiveWallpaper(forLockScreen = true).id)
-        assertEquals(homeTheme.id, repository.getEffectiveTheme(forLockScreen = true)?.id)
     }
 
     @Test
@@ -538,15 +430,6 @@ class WallpaperAppRobolectricTest {
                     onUploadHtml = {},
                     onUploadVideo = {},
                     onUploadGif = {},
-                    onUploadTheme = {},
-                    onToggleThemeOverlay = {
-                        state = state.copy(settings = state.settings.copy(themeEnabled = !state.settings.themeEnabled))
-                    },
-                    onClearTheme = {
-                        state = state.copy(activeTheme = null)
-                    },
-                    onOpenFullscreenPreview = { state = state.copy(showFullscreenPreview = true) },
-                    onDismissFullscreenPreview = { state = state.copy(showFullscreenPreview = false) },
                     onOpenApplySheet = { state = state.copy(showApplySheet = true) },
                     onDismissApplySheet = { state = state.copy(showApplySheet = false) },
                     onApplyForTarget = { target ->
@@ -568,15 +451,8 @@ class WallpaperAppRobolectricTest {
                     onVolumeChange = {},
                     onMuteOtherMediaChange = {},
                     onTouchEnabledChange = {},
-                    onThemeTransparentChange = { transparent ->
-                        state = state.copy(settings = state.settings.copy(themeTransparentBackground = transparent))
-                    },
                     onRenderModeChange = { mode ->
                         state = state.copy(settings = state.settings.copy(renderMode = mode))
-                    },
-                    onLockScreenChangeEnabled = { enabled ->
-                        val nextTarget = if (enabled) WallpaperTarget.BOTH else WallpaperTarget.HOME_ONLY
-                        state = state.copy(settings = state.settings.copy(wallpaperTarget = nextTarget))
                     }
                 )
             }
@@ -584,25 +460,16 @@ class WallpaperAppRobolectricTest {
 
         composeTestRule.mainClock.advanceTimeBy(200)
 
-        // Verify all 4 upload buttons (HTML, Video, GIF, Theme) & bottom Set Home / Lock Screen button exist
+        // Verify the 3 upload buttons & bottom Set Home / Lock Screen button exist
         composeTestRule.onNodeWithTag("upload_html_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("upload_video_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("upload_gif_button").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("upload_theme_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("set_home_lock_button").assertIsDisplayed()
 
         // Switch preview from Lock Screen to Home Screen
         composeTestRule.onNodeWithTag("pill_preview_home").performClick()
         composeTestRule.mainClock.advanceTimeBy(200)
         assertEquals(PhonePreviewStyle.HOME_SCREEN, state.previewStyle)
-
-        // Open Full Mobile View & close it
-        composeTestRule.onNodeWithTag("fullscreen_preview_button").performClick()
-        composeTestRule.mainClock.advanceTimeBy(200)
-        composeTestRule.onNodeWithTag("fullscreen_mobile_view").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("close_fullscreen_preview_button").performClick()
-        composeTestRule.mainClock.advanceTimeBy(200)
-        assertFalse(state.showFullscreenPreview)
 
         // Toggle theme
         assertFalse(state.settings.darkTheme)
@@ -623,32 +490,9 @@ class WallpaperAppRobolectricTest {
         assertEquals(WallpaperTarget.LOCK_ONLY, selectedTarget)
         assertFalse(state.showApplySheet)
 
-        // Open Settings Sheet & test transparent theme toggle + Lock Screen change controls + sound + render mode
+        // Open Settings Sheet & test sound toggle + compatibility render mode
         composeTestRule.onNodeWithTag("settings_button").performClick()
         composeTestRule.mainClock.advanceTimeBy(350)
-
-        composeTestRule.onNodeWithTag("sheet_theme_transparent_switch").assertExists().performClick()
-        composeTestRule.mainClock.advanceTimeBy(200)
-        assertFalse(state.settings.themeTransparentBackground)
-
-        // Verify Lock Screen change panel & upload buttons exist in Settings when enabled
-        composeTestRule.onNodeWithTag("sheet_lock_screen_switch").assertExists()
-        composeTestRule.onNodeWithTag("sheet_lock_screen_panel").assertExists()
-        composeTestRule.onNodeWithTag("sheet_lock_upload_html").assertExists()
-        composeTestRule.onNodeWithTag("sheet_lock_upload_video").assertExists()
-        composeTestRule.onNodeWithTag("sheet_lock_upload_gif").assertExists()
-        composeTestRule.onNodeWithTag("sheet_lock_upload_theme").assertExists()
-        composeTestRule.onNodeWithTag("sheet_apply_lock_button").assertExists()
-
-        // Toggle Change Lock Screen OFF -> switches to HOME_ONLY and hides panel
-        composeTestRule.onNodeWithTag("sheet_lock_screen_switch").performClick()
-        composeTestRule.mainClock.advanceTimeBy(200)
-        assertEquals(WallpaperTarget.HOME_ONLY, state.settings.wallpaperTarget)
-
-        // Toggle Change Lock Screen back ON -> switches to BOTH
-        composeTestRule.onNodeWithTag("sheet_lock_screen_switch").performClick()
-        composeTestRule.mainClock.advanceTimeBy(200)
-        assertEquals(WallpaperTarget.BOTH, state.settings.wallpaperTarget)
 
         composeTestRule.onNodeWithTag("sheet_sound_switch").assertExists().performClick()
         composeTestRule.mainClock.advanceTimeBy(200)

@@ -19,9 +19,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -76,56 +74,46 @@ private fun LiveHtmlRoot(
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
-    var pendingForLockScreen by remember { mutableStateOf(false) }
 
     val htmlOpenDocPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
-    ) { uri -> if (uri != null) viewModel.importHtml(uri, forLockScreen = pendingForLockScreen) }
+    ) { uri -> if (uri != null) viewModel.importHtml(uri) }
 
     val htmlGetContentFallback = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
-    ) { uri -> if (uri != null) viewModel.importHtml(uri, forLockScreen = pendingForLockScreen) }
-
-    val themeOpenDocPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri -> if (uri != null) viewModel.importHtmlTheme(uri, forLockScreen = pendingForLockScreen) }
-
-    val themeGetContentFallback = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri -> if (uri != null) viewModel.importHtmlTheme(uri, forLockScreen = pendingForLockScreen) }
+    ) { uri -> if (uri != null) viewModel.importHtml(uri) }
 
     val videoPhotoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri -> if (uri != null) viewModel.importVideo(uri, forLockScreen = pendingForLockScreen) }
+    ) { uri -> if (uri != null) viewModel.importVideo(uri) }
 
     val videoOpenDocFallback = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
-    ) { uri -> if (uri != null) viewModel.importVideo(uri, forLockScreen = pendingForLockScreen) }
+    ) { uri -> if (uri != null) viewModel.importVideo(uri) }
 
     val videoGetContentFallback = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
-    ) { uri -> if (uri != null) viewModel.importVideo(uri, forLockScreen = pendingForLockScreen) }
+    ) { uri -> if (uri != null) viewModel.importVideo(uri) }
 
     val gifOpenDocPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
-    ) { uri -> if (uri != null) viewModel.importGif(uri, forLockScreen = pendingForLockScreen) }
+    ) { uri -> if (uri != null) viewModel.importGif(uri) }
 
     val gifGetContentFallback = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
-    ) { uri -> if (uri != null) viewModel.importGif(uri, forLockScreen = pendingForLockScreen) }
+    ) { uri -> if (uri != null) viewModel.importGif(uri) }
 
-    val htmlMimeTypes = arrayOf(
-        "text/html",
-        "application/zip",
-        "application/x-zip-compressed",
-        "application/octet-stream",
-        "*/*"
-    )
-
-    fun launchHtmlPicker(forLockScreen: Boolean = false) {
-        pendingForLockScreen = forLockScreen
+    fun launchHtmlPicker() {
         val launched = runCatching {
-            htmlOpenDocPicker.launch(htmlMimeTypes)
+            htmlOpenDocPicker.launch(
+                arrayOf(
+                    "text/html",
+                    "application/zip",
+                    "application/x-zip-compressed",
+                    "application/octet-stream",
+                    "*/*"
+                )
+            )
             true
         }.getOrDefault(false)
         if (!launched) {
@@ -139,25 +127,7 @@ private fun LiveHtmlRoot(
         }
     }
 
-    fun launchThemePicker(forLockScreen: Boolean = false) {
-        pendingForLockScreen = forLockScreen
-        val launched = runCatching {
-            themeOpenDocPicker.launch(htmlMimeTypes)
-            true
-        }.getOrDefault(false)
-        if (!launched) {
-            val fallbackOk = runCatching {
-                themeGetContentFallback.launch("*/*")
-                true
-            }.getOrDefault(false)
-            if (!fallbackOk) {
-                viewModel.showMessage(context.getString(R.string.msg_file_picker_error))
-            }
-        }
-    }
-
-    fun launchVideoPicker(forLockScreen: Boolean = false) {
-        pendingForLockScreen = forLockScreen
+    fun launchVideoPicker() {
         val launched = runCatching {
             videoPhotoPicker.launch(
                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
@@ -181,8 +151,7 @@ private fun LiveHtmlRoot(
         }
     }
 
-    fun launchGifPicker(forLockScreen: Boolean = false) {
-        pendingForLockScreen = forLockScreen
+    fun launchGifPicker() {
         val launched = runCatching {
             gifOpenDocPicker.launch(arrayOf("image/gif", "image/*", "*/*"))
             true
@@ -216,14 +185,9 @@ private fun LiveHtmlRoot(
             HomeScreen(
                 uiState = uiState,
                 repository = viewModel.repository,
-                onUploadHtml = { launchHtmlPicker(forLockScreen = false) },
-                onUploadVideo = { launchVideoPicker(forLockScreen = false) },
-                onUploadGif = { launchGifPicker(forLockScreen = false) },
-                onUploadTheme = { launchThemePicker(forLockScreen = false) },
-                onToggleThemeOverlay = viewModel::toggleThemeEnabled,
-                onClearTheme = viewModel::clearActiveTheme,
-                onOpenFullscreenPreview = { viewModel.setFullscreenPreviewVisible(true) },
-                onDismissFullscreenPreview = { viewModel.setFullscreenPreviewVisible(false) },
+                onUploadHtml = ::launchHtmlPicker,
+                onUploadVideo = ::launchVideoPicker,
+                onUploadGif = ::launchGifPicker,
                 onOpenApplySheet = { viewModel.setApplySheetVisible(true) },
                 onDismissApplySheet = { viewModel.setApplySheetVisible(false) },
                 onApplyForTarget = { target: WallpaperTarget ->
@@ -238,19 +202,7 @@ private fun LiveHtmlRoot(
                 onVolumeChange = viewModel::setVolume,
                 onMuteOtherMediaChange = viewModel::setMuteDuringOtherMedia,
                 onTouchEnabledChange = viewModel::setTouchEnabled,
-                onThemeTransparentChange = viewModel::setThemeTransparentBackground,
                 onRenderModeChange = viewModel::setRenderMode,
-                onLockScreenChangeEnabled = viewModel::setLockScreenChangeEnabled,
-                onUploadLockHtml = { launchHtmlPicker(forLockScreen = true) },
-                onUploadLockVideo = { launchVideoPicker(forLockScreen = true) },
-                onUploadLockGif = { launchGifPicker(forLockScreen = true) },
-                onUploadLockTheme = { launchThemePicker(forLockScreen = true) },
-                onClearLockScreenCustom = viewModel::clearLockScreenCustom,
-                onApplyLockScreenNow = {
-                    viewModel.setLockScreenChangeEnabled(true)
-                    viewModel.setSettingsSheetVisible(false)
-                    onLaunchWallpaperPicker()
-                },
                 modifier = Modifier.padding(innerPadding)
             )
         }

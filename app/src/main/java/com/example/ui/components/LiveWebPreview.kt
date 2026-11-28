@@ -61,8 +61,6 @@ fun LiveWebPreview(
     reloadKey: Any = 0,
     inlineHtml: String? = null,
     preferSoftwareLayer: Boolean = true,
-    transparentBackground: Boolean = false,
-    viewMode: String? = null,
     modifier: Modifier = Modifier
 ) {
     var recoveryCount by remember(url, reloadKey) { mutableIntStateOf(0) }
@@ -110,8 +108,6 @@ fun LiveWebPreview(
             reloadKey = reloadKey,
             inlineHtml = inlineHtml,
             useSoftwareLayer = useSoftwareLayer,
-            transparentBackground = transparentBackground,
-            viewMode = viewMode,
             onRendererCrashed = {
                 if (recoveryCount < MAX_RENDERER_RECOVERIES) {
                     useSoftwareLayer = true
@@ -136,8 +132,6 @@ private fun ManagedLiveWebView(
     reloadKey: Any,
     inlineHtml: String?,
     useSoftwareLayer: Boolean,
-    transparentBackground: Boolean,
-    viewMode: String?,
     onRendererCrashed: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -221,13 +215,6 @@ private fun ManagedLiveWebView(
         pushAudioState(webViewRef, isResumed)
     }
 
-    LaunchedEffect(viewMode, pageLoaded, webViewRef) {
-        val mode = viewMode ?: return@LaunchedEffect
-        val wv = webViewRef ?: return@LaunchedEffect
-        if (!pageLoaded || isDestroyed) return@LaunchedEffect
-        runCatching { wv.evaluateJavascript(AudioBridgeScript.buildViewModeJs(mode), null) }
-    }
-
     val currentSignature = Triple(url, reloadKey, inlineHtml?.hashCode())
     LaunchedEffect(currentSignature, webViewRef) {
         val wv = webViewRef ?: return@LaunchedEffect
@@ -261,7 +248,7 @@ private fun ManagedLiveWebView(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT
                         )
-                        setBackgroundColor(if (transparentBackground) Color.TRANSPARENT else Color.BLACK)
+                        setBackgroundColor(Color.BLACK)
                         isVerticalScrollBarEnabled = false
                         isHorizontalScrollBarEnabled = false
                         overScrollMode = View.OVER_SCROLL_NEVER
@@ -307,11 +294,6 @@ private fun ManagedLiveWebView(
                             onPageReady = { loaded ->
                                 pageLoaded = true
                                 pushAudioState(loaded, isResumed)
-                                if (viewMode != null) {
-                                    runCatching {
-                                        loaded.evaluateJavascript(AudioBridgeScript.buildViewModeJs(viewMode), null)
-                                    }
-                                }
                                 loaded.invalidate()
                             },
                             onRendererCrash = { crashedView, _ ->
